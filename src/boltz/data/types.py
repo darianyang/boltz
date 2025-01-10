@@ -368,6 +368,9 @@ class InterfaceInfo:
 class InferenceOptions:
     binders: list[int]
     pocket: Optional[list[tuple[int, int]]]
+    # TODO: add support for min and max distances
+    #distances: Optional[list[tuple[float, float]]]
+    distances: Optional[list[tuple[float]]]
 
 
 @dataclass(frozen=True)

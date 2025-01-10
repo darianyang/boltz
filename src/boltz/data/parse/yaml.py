@@ -35,6 +35,7 @@ def parse_yaml(path: Path, ccd: dict[str, Mol]) -> Target:
         - pocket:
             binder: E
             contacts: [[B, 1], [B, 2]]
+            distances: [3.0, 4.0]
     version: 1
 
     Parameters

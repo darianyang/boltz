@@ -490,6 +490,7 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
         - pocket:
             binder: E
             contacts: [[B, 1], [B, 2]]
+            distances: [3.0, 4.0]
 
     Parameters
     ----------
@@ -796,26 +797,35 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
             c2, r2, a2 = atom_idx_map[(c2, r2 - 1, a2)]  # 1-indexed
             connections.append((c1, c2, r1, r2, a1, a2))
         elif "pocket" in constraint:
+            # distances are optional so no need to check for them here
             if "binder" not in constraint["pocket"] or "contacts" not in constraint["pocket"]:
                 msg = f"Pocket constraint was not properly specified"
                 raise ValueError(msg)
 
             binder = constraint["pocket"]["binder"]
             contacts = constraint["pocket"]["contacts"]
+            # default to None if distances are not provided
+            distances = constraint["pocket"].get("distances", [None] * len(contacts))
+
+            if len(contacts) != len(distances):
+                msg = f"Number of contacts and distances must match"
+                raise ValueError(msg)
 
             if len(pocket_binders) > 0:
                 if pocket_binders[-1] != chain_to_idx[binder]:
                     msg = f"Only one pocket binders is supported!"
                     raise ValueError(msg)
                 else:
-                    pocket_residues[-1].extend([
-                        (chain_to_idx[chain_name], residue_index - 1) for chain_name, residue_index in contacts
-                    ])
+                    pocket_residues[-1].extend(
+                        [(chain_to_idx[chain_name], residue_index - 1, distance) 
+                         for (chain_name, residue_index), distance in zip(contacts, distances)]
+                    )
 
             else:
                 pocket_binders.append(chain_to_idx[binder])
                 pocket_residues.extend(
-                    [(chain_to_idx[chain_name],residue_index-1) for chain_name,residue_index in contacts]
+                    [(chain_to_idx[chain_name],residue_index-1, distance) 
+                     for (chain_name,residue_index), distance in zip(contacts, distances)]
                 )
         else:
             msg = f"Invalid constraint: {constraint}"
@@ -858,7 +868,8 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
 
     options = InferenceOptions(
         binders=pocket_binders,
-        pocket=pocket_residues
+        pocket=pocket_residues,
+        distances=distances
     )
 
     record = Record(
