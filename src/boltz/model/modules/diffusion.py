@@ -612,9 +612,10 @@ class AtomDiffusion(Module):
                     resample_indices = (
                         torch.multinomial(
                             resample_weights,
-                            resample_weights.shape[1]
-                            if step_idx < num_sampling_steps - 1
-                            else 1,
+                            # with no bool = always return n_particles number of samples
+                            resample_weights.shape[1],
+                            #if step_idx < num_sampling_steps - 1
+                            #else 1,
                             replacement=True,
                         )
                         + resample_weights.shape[1]
