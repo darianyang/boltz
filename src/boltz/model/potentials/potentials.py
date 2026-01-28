@@ -314,6 +314,18 @@ class PlanarBondPotential(FlatBottomPotential, AbsDihedralPotential):
 
         return improper_index, (k, lower_bounds, upper_bounds), None
 
+# test a single contact point potential
+class ContactPotential(FlatBottomPotential, DistancePotential):
+    def compute_args(self, feats, parameters):
+        #index = feats["contact_pair_index"][0]
+        # TODO: prob need a mask here when selecting the contact pair
+        index = torch.tensor([[5],[20]], device=feats["atom_pad_mask"].device)  # dummy test index
+        distance = 10 # Angstrom : fixed distance for testing
+        lower_bounds = torch.full((index.shape[1],), distance - parameters['buffer'], device=index.device)
+        upper_bounds = torch.full((index.shape[1],), distance + parameters['buffer'], device=index.device)
+        k = torch.ones_like(lower_bounds)
+        return index, (k, lower_bounds, upper_bounds), None
+
 def get_potentials():
     potentials = [
         SymmetricChainCOMPotential(
@@ -383,6 +395,14 @@ def get_potentials():
                 'resampling_weight': 1.0,
                 'buffer': 0.26180
             }
-        )
+        ),
+        ContactPotential(
+            parameters={
+                'guidance_interval': 1,
+                'guidance_weight': 0.5,
+                'resampling_weight': 1.0,
+                'buffer': 1.0, # e.g. here a distance buffer?
+            }
+        ),
     ]
     return potentials
