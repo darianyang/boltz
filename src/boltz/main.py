@@ -43,7 +43,8 @@ class BoltzProcessedInput:
 class PairformerArgs:
     """Pairformer arguments."""
 
-    num_blocks: int = 48
+    #num_blocks: int = 48
+    num_blocks: int = 8
     num_heads: int = 16
     dropout: float = 0.0
     activation_checkpointing: bool = False
@@ -57,6 +58,7 @@ class MSAModuleArgs:
 
     msa_s: int = 64
     msa_blocks: int = 4
+    #msa_blocks: int = 1
     msa_dropout: float = 0.0
     z_dropout: float = 0.0
     pairwise_head_width: int = 32
@@ -71,8 +73,10 @@ class BoltzDiffusionParams:
     """Diffusion process parameters."""
 
     gamma_0: float = 0.605
+    #gamma_0: float = 0.0 # ODE
     gamma_min: float = 1.107
     noise_scale: float = 0.901
+    #noise_scale: float = 1.0 # ODE
     rho: float = 8
     step_scale: float = 1.638
     sigma_min: float = 0.0004
@@ -717,7 +721,8 @@ def predict(
         "recycling_steps": recycling_steps,
         "sampling_steps": sampling_steps,
         "diffusion_samples": diffusion_samples,
-        "write_confidence_summary": True,
+        #"write_confidence_summary": True,
+        "write_confidence_summary": False,
         "write_full_pae": write_full_pae,
         "write_full_pde": write_full_pde,
     }
