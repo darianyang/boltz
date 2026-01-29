@@ -20,7 +20,13 @@ class Potential(ABC):
         if index.shape[1] == 0:
             return torch.zeros(coords.shape[:-2], device=coords.device)
 
+        print("COMPUTING POTENTIAL")
         if com_args is not None:
+            print("WITH COM")
+            # If using COM, define COM groups, along with atom padding mask for valid atoms
+            # then compute COM of each unpadded group of atom coords
+            # each group then has an index, this index is used to compute variable
+            # e.g. to compute the distance between COMs of two groups
             com_index, atom_pad_mask = com_args
             unpad_com_index = com_index[atom_pad_mask]
             unpad_coords = coords[...,atom_pad_mask,:]
@@ -39,15 +45,18 @@ class Potential(ABC):
 
     def compute_gradient(self, coords, feats, parameters):
         index, args, com_args = self.compute_args(feats, parameters)
+        print("COMPUTING GRADIENT")
         if com_args is not None:
             com_index, atom_pad_mask = com_args
         else:
             com_index, atom_pad_mask = None, None
 
+        # TODO: can this be moved up and above bool consolidated with below?
         if index.shape[1] == 0:
             return torch.zeros_like(coords)
 
         if com_index is not None:
+            print("WITH COM")
             unpad_coords = coords[...,atom_pad_mask,:]
             unpad_com_index = com_index[atom_pad_mask]
             coords = torch.zeros(
@@ -314,94 +323,130 @@ class PlanarBondPotential(FlatBottomPotential, AbsDihedralPotential):
 
         return improper_index, (k, lower_bounds, upper_bounds), None
 
-# test a single contact point potential
+# test a single contact distance potential
 class ContactPotential(FlatBottomPotential, DistancePotential):
     def compute_args(self, feats, parameters):
+        # TODO: for com_args: return com_group_ids and atom_pad_mask
+        #       then return the index for the com_groups that are being calculated
         #index = feats["contact_pair_index"][0]
+        # atom_chain_id = (
+        #     torch.bmm(feats["atom_to_token"].float(), feats["asym_id"].unsqueeze(-1).float())
+        #     .squeeze(-1)
+        #     .long()
+        # )[0]
+        # print(f"{atom_chain_id.shape=}")
+
+        # assign two groups: ligand and receptor
+        # TODO: eventually include these in feats for generality
+        lig_indices = [153, 154, 156, 157, 158]
+        lig_indices = [i - 1 for i in lig_indices]  # convert to zero indexing
+        rec_indices = [94, 120, 128]
+        rec_indices = [i - 1 for i in rec_indices]  # convert to zero indexing
+        print(f"{lig_indices=}, {rec_indices=}")
+
+        # assign com group id of 0 to other, 1 to receptor, 2 to ligand
+        # start with zero tensor of shape (num_atoms,)
+        atom_group_id = torch.zeros(feats["atom_pad_mask"].shape[1], dtype=torch.long, device=feats["atom_pad_mask"].device)
+        atom_group_id[rec_indices] = 1
+        atom_group_id[lig_indices] = 2
+        print(f"{atom_group_id=}: {atom_group_id=}")
+
         # TODO: prob need a mask here when selecting the contact pair
-        index = torch.tensor([[5],[20]], device=feats["atom_pad_mask"].device)  # dummy test index
-        distance = 10 # Angstrom : fixed distance for testing
+        # note that index is for coords, which is of shape (n_fk_particles, n_padded_atoms, 3)
+        # so need to return indices that are valid for the padded atoms only
+        # but the padding is just for the last few atoms, that is it padds the ends of the tensor dim 
+        atom_pad_mask = feats['atom_pad_mask'][0].bool()
+        print(f"{atom_pad_mask.shape=}")
+        # TODO: dummy test index, use same device as feats, e.g. GPU
+        #index = torch.tensor([[5],[20]], device=feats["atom_pad_mask"].device)
+        # 1 is receptor group and 2 is ligand group
+        index = torch.tensor([[1],[2]], device=feats["atom_pad_mask"].device)
+
+        distance = 10 # Angstrom : fixed distance for testing (TODO)
         lower_bounds = torch.full((index.shape[1],), distance - parameters['buffer'], device=index.device)
         upper_bounds = torch.full((index.shape[1],), distance + parameters['buffer'], device=index.device)
+        # force constant: 1.0 for each contact
         k = torch.ones_like(lower_bounds)
-        return index, (k, lower_bounds, upper_bounds), None
+
+        #return index, (k, lower_bounds, upper_bounds), None
+        return index, (k, lower_bounds, upper_bounds), (atom_group_id, atom_pad_mask)
 
 def get_potentials():
     potentials = [
-        SymmetricChainCOMPotential(
-            parameters={
-                'guidance_interval': 4,
-                'guidance_weight': 0.5,
-                'resampling_weight': 0.5,
-                'buffer': ExponentialInterpolation(
-                    start=1.0,
-                    end=5.0,
-                    alpha=-2.0
-                )
-            }
-        ),
-        VDWOverlapPotential(
-            parameters={
-                'guidance_interval': 5,
-                'guidance_weight': PiecewiseStepFunction(
-                    thresholds=[0.4],
-                    values=[0.125, 0.0]
-                ),
-                'resampling_weight': PiecewiseStepFunction(
-                    thresholds=[0.6],
-                    values=[0.01, 0.0]
-                ),
-                'buffer': 0.225,
-            }
-        ),
-        ConnectionsPotential(
-            parameters={
-                'guidance_interval': 1,
-                'guidance_weight': 0.15,
-                'resampling_weight': 1.0,
-                'buffer': 2.0,
-            }
-        ),
-        PoseBustersPotential(
-            parameters={
-                'guidance_interval': 1,
-                'guidance_weight': 0.05,
-                'resampling_weight': 0.1,
-                'bond_buffer': 0.20,
-                'angle_buffer': 0.20,
-                'clash_buffer': 0.15
-            }
-        ),
-        ChiralAtomPotential(
-            parameters={
-                'guidance_interval': 1,
-                'guidance_weight': 0.10,
-                'resampling_weight': 1.0,
-                'buffer': 0.52360
-            }
-        ),
-        StereoBondPotential(
-            parameters={
-                'guidance_interval': 1,
-                'guidance_weight': 0.05,
-                'resampling_weight': 1.0,
-                'buffer': 0.52360
-            }
-        ),
-        PlanarBondPotential(
-            parameters={
-                'guidance_interval': 1,
-                'guidance_weight': 0.05,
-                'resampling_weight': 1.0,
-                'buffer': 0.26180
-            }
-        ),
+        # SymmetricChainCOMPotential(
+        #     parameters={
+        #         'guidance_interval': 4,
+        #         'guidance_weight': 0.5,
+        #         'resampling_weight': 0.5,
+        #         'buffer': ExponentialInterpolation(
+        #             start=1.0,
+        #             end=5.0,
+        #             alpha=-2.0
+        #         )
+        #     }
+        # ),
+        # VDWOverlapPotential(
+        #     parameters={
+        #         'guidance_interval': 5,
+        #         'guidance_weight': PiecewiseStepFunction(
+        #             thresholds=[0.4],
+        #             values=[0.125, 0.0]
+        #         ),
+        #         'resampling_weight': PiecewiseStepFunction(
+        #             thresholds=[0.6],
+        #             values=[0.01, 0.0]
+        #         ),
+        #         'buffer': 0.225,
+        #     }
+        # ),
+        # ConnectionsPotential(
+        #     parameters={
+        #         'guidance_interval': 1,
+        #         'guidance_weight': 0.15,
+        #         'resampling_weight': 1.0,
+        #         'buffer': 2.0,
+        #     }
+        # ),
+        # PoseBustersPotential(
+        #     parameters={
+        #         'guidance_interval': 1,
+        #         'guidance_weight': 0.05,
+        #         'resampling_weight': 0.1,
+        #         'bond_buffer': 0.20,
+        #         'angle_buffer': 0.20,
+        #         'clash_buffer': 0.15
+        #     }
+        # ),
+        # ChiralAtomPotential(
+        #     parameters={
+        #         'guidance_interval': 1,
+        #         'guidance_weight': 0.10,
+        #         'resampling_weight': 1.0,
+        #         'buffer': 0.52360
+        #     }
+        # ),
+        # StereoBondPotential(
+        #     parameters={
+        #         'guidance_interval': 1,
+        #         'guidance_weight': 0.05,
+        #         'resampling_weight': 1.0,
+        #         'buffer': 0.52360
+        #     }
+        # ),
+        # PlanarBondPotential(
+        #     parameters={
+        #         'guidance_interval': 1,
+        #         'guidance_weight': 0.05,
+        #         'resampling_weight': 1.0,
+        #         'buffer': 0.26180
+        #     }
+        # ),
         ContactPotential(
             parameters={
                 'guidance_interval': 1,
                 'guidance_weight': 0.5,
                 'resampling_weight': 1.0,
-                'buffer': 1.0, # e.g. here a distance buffer?
+                'buffer': 1.0, # e.g. here a distance buffer, but normally the actual distance
             }
         ),
     ]
