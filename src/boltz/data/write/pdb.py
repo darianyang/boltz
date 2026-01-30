@@ -6,22 +6,42 @@ from torch import Tensor
 from boltz.data import const
 from boltz.data.types import Structure
 
+def format_coord(value, width=8, max_decimals=3):
+    """
+    Format coordinate to fit within width, reducing decimals if needed.
+    Needed when writing PDB with with xyz coordinates e.g. < -999.999 
+    This is greater than 8 characters, so we need to reduce decimals.
+    """
+    for decimals in range(max_decimals, -1, -1):
+        formatted = f"{value:.{decimals}f}"
+        if len(formatted) <= width:
+            return f"{formatted:>{width}}"
+    # Fallback if even 0 decimals doesn't fit
+    return f"{value:>{width}.0f}"
 
-def to_pdb(structure: Structure, plddts: Optional[Tensor] = None) -> str:  # noqa: PLR0915
+def to_pdb(structure: Structure, plddts: Optional[Tensor] = None,
+           model: Optional[int] = None) -> str:  # noqa: PLR0915
     """Write a structure into a PDB file.
 
     Parameters
     ----------
     structure : Structure
         The input structure
+    plddts : Optional[Tensor]
+        Per-residue pLDDT confidence scores to write into B-factor column.
+    model : Optional[int]
+        If specified, write MODEL/ENDMDL records around the structure.
 
     Returns
     -------
     str
-        the output PDB file
-
+        The output PDB file as a string.
     """
     pdb_lines = []
+    if model is not None:
+        # Write MODEL record: total space is 14 characters
+        # right-align model number in 9 spaces after 'MODEL'
+        pdb_lines.append(f"MODEL{model:>9}")
 
     atom_index = 1
     atom_reindex_ter = []
@@ -96,7 +116,7 @@ def to_pdb(structure: Structure, plddts: Optional[Tensor] = None) -> str:  # noq
                     f"{record_type:<6}{atom_index:>5} {name:<4}{alt_loc:>1}"
                     f"{res_name_3:>3} {chain_tag:>1}"
                     f"{residue_index:>4}{insertion_code:>1}   "
-                    f"{pos[0]:>8.3f}{pos[1]:>8.3f}{pos[2]:>8.3f}"
+                    f"{format_coord(pos[0])}{format_coord(pos[1])}{format_coord(pos[2])}"
                     f"{occupancy:>6.2f}{b_factor:>6.2f}          "
                     f"{element:>2}{charge:>2}"
                 )
@@ -131,7 +151,11 @@ def to_pdb(structure: Structure, plddts: Optional[Tensor] = None) -> str:  # noq
             conect_line = f"CONECT{atom1_idx:>5}{atom2_idx:>5}"
             pdb_lines.append(conect_line)
 
-    pdb_lines.append("END")
-    pdb_lines.append("")
+    #pdb_lines.append("END")
+    #pdb_lines.append("") # why was the extra newline added?
+    if model is not None:
+        pdb_lines.append("ENDMDL")
+    else:
+        pdb_lines.append("END")
     pdb_lines = [line.ljust(80) for line in pdb_lines]
     return "\n".join(pdb_lines)
