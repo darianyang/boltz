@@ -36,6 +36,7 @@ from boltz.model.modules.utils import (
 )
 from boltz.model.potentials.potentials import get_potentials
 
+from tqdm.auto import tqdm
 
 class DiffusionModule(Module):
     """Diffusion module"""
@@ -453,8 +454,18 @@ class AtomDiffusion(Module):
         multiplicity=1,
         train_accumulate_token_repr=False,
         steering_args=None,
+        diffusion_coords_out=None, # for saving intermediate coords
         **network_condition_kwargs,
     ):
+        # if intermediate coords are to be saved
+        if diffusion_coords_out is not None:
+            # # prepare structure object to store
+            # structure = self.structure
+            # and a list to hold the pdb strings of each step
+            #pdb_str = []
+            # instead, just save the coords in a list
+            traj_coords = []
+
         potentials = get_potentials()
         if steering_args["fk_steering"]:
             multiplicity = multiplicity * steering_args["num_particles"]
@@ -489,24 +500,37 @@ class AtomDiffusion(Module):
         token_a = None
 
         # gradually denoise
-        for step_idx, (sigma_tm, sigma_t, gamma) in enumerate(sigmas_and_gammas):
-            random_R, random_tr = compute_random_augmentation(
-                multiplicity, device=atom_coords.device, dtype=atom_coords.dtype
-            )
-            atom_coords = atom_coords - atom_coords.mean(dim=-2, keepdims=True)
-            atom_coords = (
-                torch.einsum("bmd,bds->bms", atom_coords, random_R) + random_tr
-            )
-            if atom_coords_denoised is not None:
-                atom_coords_denoised -= atom_coords_denoised.mean(dim=-2, keepdims=True)
-                atom_coords_denoised = (
-                    torch.einsum("bmd,bds->bms", atom_coords_denoised, random_R)
-                    + random_tr
+        for step_idx, (sigma_tm, sigma_t, gamma) in tqdm(enumerate(sigmas_and_gammas), 
+                                                         total=num_sampling_steps, desc="Diffusion Sampling: "):
+        #for step_idx, (sigma_tm, sigma_t, gamma) in enumerate(sigmas_and_gammas):
+            # with no diff coord out, use standard random augmentation workflow
+            if diffusion_coords_out is None:
+                # compute random augmentation
+                random_R, random_tr = compute_random_augmentation(
+                    multiplicity, device=atom_coords.device, dtype=atom_coords.dtype
                 )
-            if steering_args["guidance_update"] and scaled_guidance_update is not None:
-                scaled_guidance_update = torch.einsum(
-                    "bmd,bds->bms", scaled_guidance_update, random_R
+                atom_coords = atom_coords - atom_coords.mean(dim=-2, keepdims=True)
+                atom_coords = (
+                    torch.einsum("bmd,bds->bms", atom_coords, random_R) + random_tr
                 )
+                if atom_coords_denoised is not None:
+                    atom_coords_denoised -= atom_coords_denoised.mean(dim=-2, keepdims=True)
+                    atom_coords_denoised = (
+                        torch.einsum("bmd,bds->bms", atom_coords_denoised, random_R)
+                        + random_tr
+                    )
+                if steering_args["guidance_update"] and scaled_guidance_update is not None:
+                    scaled_guidance_update = torch.einsum(
+                        "bmd,bds->bms", scaled_guidance_update, random_R
+                    )
+            else:
+                # when saving intermediate coords, just center the coords
+                atom_coords = atom_coords - atom_coords.mean(dim=-2, keepdims=True)
+                if atom_coords_denoised is not None:
+                    atom_coords_denoised = atom_coords_denoised - atom_coords_denoised.mean(dim=-2, keepdims=True)
+                # no guidance update random augmentation since coords are centered
+                # if steering_args["guidance_update"] and scaled_guidance_update is not None:
+                #     scaled_guidance_update = scaled_guidance_update - scaled_guidance_update.mean(dim=-2, keepdims=True)
 
             sigma_tm, sigma_t, gamma = sigma_tm.item(), sigma_t.item(), gamma.item()
 
@@ -671,7 +695,31 @@ class AtomDiffusion(Module):
 
             atom_coords = atom_coords_next
 
-        return dict(sample_atom_coords=atom_coords, diff_token_repr=token_repr)
+            # save intermediate coords if requested
+            if diffusion_coords_out is not None:
+                # save the raw coords in a list:
+                # prevents errors with not having access to full structure object
+                # first unpad using atom_mask: converts from (n_samples * particles, n_atoms_padded, 3) to (n_valid_atoms, 3)
+                # TODO: could also unmask in predict script, output padded coords here like how atom_coords is outputted
+                #coords_unpadded = atom_coords[atom_mask.bool()].cpu().numpy() # moving to cpu later in predict script
+                coords_unpadded = atom_coords[atom_mask.bool()]
+
+                # note that with steering, these coords will have multiplicity, which is already n_diff_samples * num_particles
+                # so for now, just return the first coord set (TODO: later can save all if needed)
+                # and note that this is then a discontinuous trajectory with resampling steps
+                # and with the last coord set of diffusion steps, returns just the 1 fk resampled coord set
+                # so only do the multiplicity slicing if not last step
+                if step_idx < num_sampling_steps - 1:
+                    first_coords = coords_unpadded[0 : coords_unpadded.shape[0] // multiplicity, :]
+                else:
+                    first_coords = coords_unpadded
+                traj_coords.append(first_coords)
+
+        if diffusion_coords_out is not None:
+            # updated return dict to include traj coords if requested
+            return dict(sample_atom_coords=atom_coords, diff_token_repr=token_repr, diffusion_coords=traj_coords)
+        else:
+            return dict(sample_atom_coords=atom_coords, diff_token_repr=token_repr)
 
     def loss_weight(self, sigma):
         return (sigma**2 + self.sigma_data**2) / ((sigma * self.sigma_data) ** 2)
