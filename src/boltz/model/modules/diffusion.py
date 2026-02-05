@@ -456,7 +456,7 @@ class AtomDiffusion(Module):
             )
             # reduce max noise for all chunks except first
             if chunk > 0:
-                sigma_max /= 10
+                self.sigma_max /= 100
             
             # gen sigmas for chunk
             sigmas = (
@@ -466,20 +466,13 @@ class AtomDiffusion(Module):
                 * (self.sigma_min**inv_rho - self.sigma_max**inv_rho)
             ) ** self.rho
 
-            # replace last value of chunk with 0 (but not if using 1 chunk)
-            # normally there is a final 0 at the end of the full schedule
-            # with chunks, we have multiple 0 points, and an extra one at the end
-            # instead of padding at the end, we initialize the tensor of size + 1 with zeros
-            # also don't replace with zero for final chunk
-            if chunks != 1 and chunk != chunks - 1:
-                sigmas[-1] = 0.0  # last step is sigma value of 0.
-
             # insert into full sigma schedule
             all_sigmas[chunk * num_sampling_steps:(chunk + 1) * num_sampling_steps] = sigmas
 
         # scale by sigma_data
         sigmas = all_sigmas * self.sigma_data
 
+        # instead of padding at the end, we initialize the tensor of size + 1 with zeros
         #sigmas = F.pad(sigmas, (0, 1), value=0.0)  # last step is sigma value of 0.
         return sigmas
 
@@ -491,6 +484,7 @@ class AtomDiffusion(Module):
         train_accumulate_token_repr=False,
         steering_args=None,
         diffusion_coords_out=None, # for saving intermediate coords
+        chunks=1, # for mod noise schedule, noting that 1 chunk is canonical noise schedule
         **network_condition_kwargs,
     ):
         # if intermediate coords are to be saved
@@ -522,7 +516,9 @@ class AtomDiffusion(Module):
         shape = (*atom_mask.shape, 3)
 
         # get the schedule, which is returned as (sigma, gamma) tuple, and pair up with the next sigma and gamma
-        sigmas = self.sample_schedule(num_sampling_steps)
+        #sigmas = self.sample_schedule(num_sampling_steps)
+        # TODO: testing mod noise schedule, note that 1 chunk is canonical noise schedule
+        sigmas = self.sample_schedule(num_sampling_steps, chunks=chunks)
         gammas = torch.where(sigmas > self.gamma_min, self.gamma_0, 0.0)
         sigmas_and_gammas = list(zip(sigmas[:-1], sigmas[1:], gammas[1:]))
 
