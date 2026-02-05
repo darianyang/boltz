@@ -428,23 +428,59 @@ class AtomDiffusion(Module):
         )
         return denoised_coords, net_out["token_a"]
 
-    def sample_schedule(self, num_sampling_steps=None):
+    def sample_schedule(self, num_sampling_steps=None, chunks=1):
+        """
+        Get the sampling noise schedule.
+
+        Parameters
+        ----------
+        num_sampling_steps : int, optional
+            The number of sampling steps, by default None (use self.num_sampling_steps).
+        chunks : int, optional
+            The number of chunks to split the noise schedule into, by default 1.
+        """
+        # to store the full sigma schedule
+        all_sigmas = torch.zeros(num_sampling_steps + 1, device=self.device, dtype=torch.float32)
+        # default(v, d): if v exists, use v, else use d
         num_sampling_steps = default(num_sampling_steps, self.num_sampling_steps)
         inv_rho = 1 / self.rho
 
-        steps = torch.arange(
-            num_sampling_steps, device=self.device, dtype=torch.float32
-        )
-        sigmas = (
-            self.sigma_max**inv_rho
-            + steps
-            / (num_sampling_steps - 1)
-            * (self.sigma_min**inv_rho - self.sigma_max**inv_rho)
-        ) ** self.rho
+        # check that num_sampling_steps is divisible by chunks and divide
+        assert num_sampling_steps % chunks == 0, "num_sampling_steps must be divisible by chunks"
+        num_sampling_steps //= chunks
 
-        sigmas = sigmas * self.sigma_data
+        # generate sigmas for each chunk
+        for chunk in range(chunks):
+            steps = torch.arange(
+                num_sampling_steps, device=self.device, dtype=torch.float32
+            )
+            # reduce max noise for all chunks except first
+            if chunk > 0:
+                sigma_max /= 10
+            
+            # gen sigmas for chunk
+            sigmas = (
+                self.sigma_max**inv_rho
+                + steps
+                / (num_sampling_steps - 1)
+                * (self.sigma_min**inv_rho - self.sigma_max**inv_rho)
+            ) ** self.rho
 
-        sigmas = F.pad(sigmas, (0, 1), value=0.0)  # last step is sigma value of 0.
+            # replace last value of chunk with 0 (but not if using 1 chunk)
+            # normally there is a final 0 at the end of the full schedule
+            # with chunks, we have multiple 0 points, and an extra one at the end
+            # instead of padding at the end, we initialize the tensor of size + 1 with zeros
+            # also don't replace with zero for final chunk
+            if chunks != 1 and chunk != chunks - 1:
+                sigmas[-1] = 0.0  # last step is sigma value of 0.
+
+            # insert into full sigma schedule
+            all_sigmas[chunk * num_sampling_steps:(chunk + 1) * num_sampling_steps] = sigmas
+
+        # scale by sigma_data
+        sigmas = all_sigmas * self.sigma_data
+
+        #sigmas = F.pad(sigmas, (0, 1), value=0.0)  # last step is sigma value of 0.
         return sigmas
 
     def sample(
