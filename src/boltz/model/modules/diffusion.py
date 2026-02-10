@@ -449,21 +449,20 @@ class AtomDiffusion(Module):
         assert num_sampling_steps % chunks == 0, "num_sampling_steps must be divisible by chunks"
         num_sampling_steps //= chunks
 
+        # reduce max noise for all chunks except first
+        sigma_max_values = [self.sigma_max] + [self.sigma_max / 1000] * (chunks - 1)
+
         # generate sigmas for each chunk
         for chunk in range(chunks):
             steps = torch.arange(
                 num_sampling_steps, device=self.device, dtype=torch.float32
             )
-            # reduce max noise for all chunks except first
-            if chunk > 0:
-                self.sigma_max /= 100
-            
             # gen sigmas for chunk
             sigmas = (
-                self.sigma_max**inv_rho
+                sigma_max_values[chunk]**inv_rho
                 + steps
                 / (num_sampling_steps - 1)
-                * (self.sigma_min**inv_rho - self.sigma_max**inv_rho)
+                * (self.sigma_min**inv_rho - sigma_max_values[chunk]**inv_rho)
             ) ** self.rho
 
             # insert into full sigma schedule
