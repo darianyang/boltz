@@ -210,7 +210,6 @@ class PoseBustersPotential(FlatBottomPotential, DistancePotential):
         upper_bounds[~bond_mask * ~angle_mask] = float('inf')
 
         k = torch.ones_like(lower_bounds)
-
         return pair_index, (k, lower_bounds, upper_bounds), None
 
 class ConnectionsPotential(FlatBottomPotential, DistancePotential):
@@ -323,7 +322,7 @@ class PlanarBondPotential(FlatBottomPotential, AbsDihedralPotential):
 
         return improper_index, (k, lower_bounds, upper_bounds), None
 
-# test a single contact distance potential
+# test contact distance potential
 class ContactPotential(FlatBottomPotential, DistancePotential):
     def compute_args(self, feats, parameters):
         # TODO: for com_args: return com_group_ids and atom_pad_mask
@@ -332,6 +331,8 @@ class ContactPotential(FlatBottomPotential, DistancePotential):
 
         # assign two groups: ligand and receptor
         # TODO: eventually include these in feats for generality
+        #       and later on, select from initial prediction or known structure
+        #       then refine from there / increase potential strength over time
         lig_indices = [1382, 1383, 1384, 1385, 1386, 1387]
         rec_indices = [650, 768, 773, 789, 797, 856, 904]
 
@@ -353,8 +354,8 @@ class ContactPotential(FlatBottomPotential, DistancePotential):
         # 1 is receptor group and 2 is ligand group
         index = torch.tensor([[1],[2]], device=feats["atom_pad_mask"].device)
 
-        # Angstrom : fixed distance for testing (TODO: also pull from feats)
-        distance = 10
+        # Angstrom : fixed distance for testing (TODO: pull from feats)
+        distance = parameters['distance']
         lower_bounds = torch.full((index.shape[1],), distance - parameters['buffer'], device=index.device)
         upper_bounds = torch.full((index.shape[1],), distance + parameters['buffer'], device=index.device)
         # force constant: 1.0 for each contact
@@ -363,7 +364,70 @@ class ContactPotential(FlatBottomPotential, DistancePotential):
         #return index, (k, lower_bounds, upper_bounds), None
         return index, (k, lower_bounds, upper_bounds), (atom_group_id, atom_pad_mask)
 
+# # test with multiple contact pairs: g2703 example
+# class ContactPotential(FlatBottomPotential, DistancePotential):
+#     def compute_args(self, feats, parameters):
+
+#         # # these are contacts from experimental distances
+#         # distance_contacts = [
+#         #     {'res1': ('A', 22), 'res2': ('A', 37), 'cb_index_1': 193, 'cb_index_2': 312, 'distance': 26.9},
+#         #     {'res1': ('A', 22), 'res2': ('A', 74), 'cb_index_1': 193, 'cb_index_2': 609, 'distance': 15.2},
+#         #     {'res1': ('A', 22), 'res2': ('A', 152), 'cb_index_1': 193, 'cb_index_2': 1270, 'distance': 25.2},
+#         #     {'res1': ('A', 79), 'res2': ('A', 37), 'cb_index_1': 656, 'cb_index_2': 312, 'distance': 26.4},
+#         #     {'res1': ('A', 79), 'res2': ('A', 74), 'cb_index_1': 656, 'cb_index_2': 609, 'distance': 11.2},
+#         #     {'res1': ('A', 79), 'res2': ('A', 108), 'cb_index_1': 656, 'cb_index_2': 901, 'distance': 25.6},
+#         #     {'res1': ('A', 102), 'res2': ('A', 108), 'cb_index_1': 849, 'cb_index_2': 901, 'distance': 11.6},
+#         #     {'res1': ('A', 102), 'res2': ('A', 121), 'cb_index_1': 849, 'cb_index_2': 1015, 'distance': 18.2},
+#         #     {'res1': ('A', 102), 'res2': ('A', 152), 'cb_index_1': 849, 'cb_index_2': 1270, 'distance': 22.5},
+#         #     ]
+
+#         # contacts from reference xtal structure (cb-cb distances)
+#         distance_contacts = [{'res1': ('A', 22), 'res2': ('A', 37), 'cb_index_1': 193, 'cb_index_2': 312, 'distance': 18.278147}, 
+#                              {'res1': ('A', 22), 'res2': ('A', 74), 'cb_index_1': 193, 'cb_index_2': 609, 'distance': 11.04889}, 
+#                              {'res1': ('A', 22), 'res2': ('A', 152), 'cb_index_1': 193, 'cb_index_2': 1270, 'distance': 27.051657}, 
+#                              {'res1': ('A', 79), 'res2': ('A', 37), 'cb_index_1': 656, 'cb_index_2': 312, 'distance': 20.74678}, 
+#                              {'res1': ('A', 79), 'res2': ('A', 74), 'cb_index_1': 656, 'cb_index_2': 609, 'distance': 9.634459}, 
+#                              {'res1': ('A', 79), 'res2': ('A', 108), 'cb_index_1': 656, 'cb_index_2': 901, 'distance': 27.564672}, 
+#                              {'res1': ('A', 102), 'res2': ('A', 108), 'cb_index_1': 849, 'cb_index_2': 901, 'distance': 10.749009}, 
+#                              {'res1': ('A', 102), 'res2': ('A', 121), 'cb_index_1': 849, 'cb_index_2': 1015, 'distance': 13.631446}, 
+#                              {'res1': ('A', 102), 'res2': ('A', 152), 'cb_index_1': 849, 'cb_index_2': 1270, 'distance': 16.009296}
+#                              ]
+
+#         # create index tensor from distance_contacts cb_index_1 and cb_index_2 values
+#         index_list_1 = []
+#         index_list_2 = []
+#         for contact in distance_contacts:
+#             index_list_1.append(contact['cb_index_1'])
+#             index_list_2.append(contact['cb_index_2'])
+#         index = torch.tensor([index_list_1, index_list_2], device=feats["atom_pad_mask"].device)
+#         #print(f"{index=}, {index.shape=}")
+
+#         # test index
+#         #index = torch.tensor([[849],[1270]], device=feats["atom_pad_mask"].device)
+#         #print(f"CONTACT_POTENTIAL: {index=}, {index.shape=}")
+
+#         # test uniform distances
+#         # distance = 10
+#         # lower_bounds = torch.full((index.shape[1],), distance - parameters['buffer'], device=index.device)
+#         # upper_bounds = torch.full((index.shape[1],), distance + parameters['buffer'], device=index.device)
+
+#         # pull distances from distance_contacts
+#         distance_list = [contact['distance'] for contact in distance_contacts]
+#         lower_bounds = torch.tensor([d - parameters['buffer'] for d in distance_list], device=index.device)
+#         upper_bounds = torch.tensor([d + parameters['buffer'] for d in distance_list], device=index.device)
+
+#         # force constant: 1.0 for each contact
+#         k = torch.ones_like(lower_bounds)
+
+#         return index, (k, lower_bounds, upper_bounds), None
+#         #return index, (k, lower_bounds, upper_bounds), (atom_group_id, atom_pad_mask)
+
 def get_potentials():
+    n_repeats = 6 # chunks
+    distance_mod = 3 # angstroms
+    distance_thresholds = [(i + 1) / n_repeats for i in range(n_repeats - 1)]
+    distance_values = list(reversed([(i + 1) * distance_mod for i in range(n_repeats)]))
+
     potentials = [
         # SymmetricChainCOMPotential(
         #     parameters={
@@ -435,11 +499,36 @@ def get_potentials():
         # ),
         ContactPotential(
             parameters={
-                'guidance_interval': 1,
-                'guidance_weight': 0.5,
-                'resampling_weight': 1.0,
-                'buffer': 1.0, # e.g. here a distance buffer, but normally the actual distance
+                'guidance_interval': 5,
+                'guidance_weight': RepeatedExponentialInterpolation(
+                    start=0.0, end=1.0, alpha=-2.0, n_repeats=n_repeats
+                    ),
+                'resampling_weight': PiecewiseStepFunction(
+                    thresholds=[1 - 1 / n_repeats], values=[1.0, 0.0]
+                    ),
+                'distance' : PiecewiseStepFunction(
+                    thresholds=distance_thresholds,
+                    values=distance_values
+                    ),
+                'buffer': 1.0, # distance +/- buffer
             }
+            # parameters={
+            #     'guidance_interval': 4,
+            #     'guidance_weight': 0.5,
+            #     'resampling_weight': 1.0,
+            #     'buffer': 2.0, # e.g. here a distance buffer, but normally the actual distance
+            # }
+            # # from Boltz2 contact potential
+            # parameters={
+            #     'guidance_interval': 4,
+            #     'guidance_weight': PiecewiseStepFunction(
+            #         thresholds=[0.25, 0.75], 
+            #         #values=[0.0, 0.5, 1.0],
+            #         values=[1.0, 0.5, 0.05],
+            #     ),
+            #     'resampling_weight': 1.0,
+            #     'buffer': 2.0,
+            # }
         ),
     ]
     return potentials
