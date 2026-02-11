@@ -728,23 +728,25 @@ class AtomDiffusion(Module):
 
             # save intermediate coords if requested
             if diffusion_coords_out is not None:
-                # save the raw coords in a list:
-                # prevents errors with not having access to full structure object
-                # first unpad using atom_mask: converts from (n_samples * particles, n_atoms_padded, 3) to (n_valid_atoms, 3)
-                # TODO: could also unmask in predict script, output padded coords here like how atom_coords is outputted
-                #coords_unpadded = atom_coords[atom_mask.bool()].cpu().numpy() # moving to cpu later in predict script
-                coords_unpadded = atom_coords[atom_mask.bool()]
-
-                # note that with steering, these coords will have multiplicity, which is already n_diff_samples * num_particles
-                # so for now, just return the first coord set (TODO: later can save all if needed)
-                # and note that this is then a discontinuous trajectory with resampling steps
-                # and with the last coord set of diffusion steps, returns just the 1 fk resampled coord set
-                # so only do the multiplicity slicing if not last step
+                # starting with the full atom coords, padded and with multiplicity
+                # let's condense this to be just one traj per diffusion sample
+                # actually there is more from the resampling particles
+                # need to then filter for one particle per diffusion sample
+                
+                # calc n_diffusion_samples and n_particles
+                n_samples = multiplicity // steering_args["num_particles"] if steering_args["fk_steering"] else multiplicity
+                n_particles = steering_args["num_particles"] if steering_args["fk_steering"] else 1
+                
+                # only save steps before last step, since last step is resampled to one particle
+                # prob fine to not save the last step here, this is saved in the output sample_atom_coords anyway
                 if step_idx < num_sampling_steps - 1:
-                    first_coords = coords_unpadded[0 : coords_unpadded.shape[0] // multiplicity, :]
-                else:
-                    first_coords = coords_unpadded
-                traj_coords.append(first_coords)
+                    # atom_coords is of shape (n_atoms * n_samples * n_particles, 3)
+                    # first split up the atom_coords by n_samples and n_particles
+                    # getting shape (n_samples, n_particles, n_atoms, 3-xyz)
+                    atom_coords_per_sample = atom_coords.view(n_samples, n_particles, -1, 3)
+                    # save the first particle of each sample
+                    # TODO: later can save all particles if needed or the best ranking particle
+                    traj_coords.append(atom_coords_per_sample[:, 0, :, :]) # shape (n_samples, n_atoms, 3)
 
         if diffusion_coords_out is not None:
             # updated return dict to include traj coords if requested
