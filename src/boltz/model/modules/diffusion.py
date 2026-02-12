@@ -495,7 +495,12 @@ class AtomDiffusion(Module):
             # instead, just save the coords in a list
             traj_coords = []
 
-        potentials = get_potentials()
+        # TODO: testing option for distance potential only steering, update later
+        if steering_args["distance_potential_only"]:
+            potentials = get_potentials(distance_potential_only=True)
+        else:
+            potentials = get_potentials()
+
         if steering_args["fk_steering"]:
             multiplicity = multiplicity * steering_args["num_particles"]
             energy_traj = torch.empty((multiplicity, 0), device=self.device)
