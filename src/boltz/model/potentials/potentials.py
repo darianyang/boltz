@@ -106,6 +106,7 @@ class Potential(ABC):
     def compute_args(self, t, feats, **parameters):
         raise NotImplementedError
 
+# linear flat bottom: E = k * max(|x - x0| - delta, 0)
 class FlatBottomPotential(Potential):
     def compute_function(self, value, k, lower_bounds, upper_bounds, compute_derivative=False):
         if lower_bounds is None:
@@ -125,6 +126,31 @@ class FlatBottomPotential(Potential):
         dEnergy = torch.zeros_like(value)
         dEnergy[neg_overflow_mask] = -1 * k.expand_as(neg_overflow_mask)[neg_overflow_mask]
         dEnergy[pos_overflow_mask] = 1 * k.expand_as(pos_overflow_mask)[pos_overflow_mask]
+
+        return energy, dEnergy
+
+# harmonic flat bottom: E = 0.5 * k * max(|x - x0| - delta, 0)**2
+class HarmonicFlatBottomPotential(Potential):
+    def compute_function(self, value, k, lower_bounds, upper_bounds, compute_derivative=False):
+        if lower_bounds is None:
+            lower_bounds = torch.full_like(value, float('-inf'))
+        if upper_bounds is None:
+            upper_bounds = torch.full_like(value, float('inf'))
+
+        neg_overflow_mask = value < lower_bounds
+        pos_overflow_mask = value > upper_bounds
+
+        energy = torch.zeros_like(value)
+        energy[neg_overflow_mask] = (0.5 * k * (lower_bounds - value)**2)[neg_overflow_mask]
+        energy[pos_overflow_mask] = (0.5 * k * (value - upper_bounds)**2)[pos_overflow_mask]
+        if not compute_derivative:
+            return energy
+
+        # derivative is k * (x - bound) 
+        # where bound is lower_bound if x < lower_bound and upper_bound if x > upper_bound
+        dEnergy = torch.zeros_like(value)
+        dEnergy[neg_overflow_mask] = -1 * (k * (lower_bounds - value))[neg_overflow_mask]
+        dEnergy[pos_overflow_mask] = 1 * (k * (value - upper_bounds))[pos_overflow_mask]
 
         return energy, dEnergy
         
@@ -324,6 +350,7 @@ class PlanarBondPotential(FlatBottomPotential, AbsDihedralPotential):
 
 # test contact distance potential
 class ContactPotential(FlatBottomPotential, DistancePotential):
+#class ContactPotential(HarmonicFlatBottomPotential, DistancePotential):
     def compute_args(self, feats, parameters):
         # TODO: for com_args: return com_group_ids and atom_pad_mask
         #       then return the index for the com_groups that are being calculated
@@ -333,8 +360,18 @@ class ContactPotential(FlatBottomPotential, DistancePotential):
         # TODO: eventually include these in feats for generality
         #       and later on, select from initial prediction or known structure
         #       then refine from there / increase potential strength over time
+        # these are for 4w52-bnz
         lig_indices = [1382, 1383, 1384, 1385, 1386, 1387]
-        rec_indices = [650, 768, 773, 789, 797, 856, 904]
+        rec_indices = [650, 768, 773, 789, 797, 856, 904] # these were bad, used r0 pred structure
+        #rec_indices = [601, 650, 658, 674, 681, 768, 797] # updated using the full boltz pred
+        # for 1opj-sti
+        # lig_indices = [2367, 2368, 2369, 2370, 2371, 2372, 2373, 2374, 2375, 2376, 2377, 
+        #                2378, 2379, 2380, 2381, 2382, 2383, 2384, 2385, 2386, 2387, 2388, 
+        #                2389, 2390, 2391, 2392, 2393, 2394, 2395, 2396, 2397, 2398, 2399, 
+        #                2400, 2401, 2402, 2403]
+        # rec_indices = [206, 214, 260, 371, 536, 562, 604, 612, 619, 628, 757, 768, 776, 
+        #                783, 795, 799, 1057, 1100, 1119, 1268, 1273, 1281, 1296, 1304]
+
 
         # assign com group id of 0 to other, 1 to receptor, 2 to ligand
         # start with zero tensor of shape (num_atoms,)
@@ -422,81 +459,81 @@ class ContactPotential(FlatBottomPotential, DistancePotential):
 #         return index, (k, lower_bounds, upper_bounds), None
 #         #return index, (k, lower_bounds, upper_bounds), (atom_group_id, atom_pad_mask)
 
-def get_potentials():
+def get_potentials(distance_potential_only=False):
     n_repeats = 6 # chunks
     distance_mod = 3 # angstroms
     distance_thresholds = [(i + 1) / n_repeats for i in range(n_repeats - 1)]
-    distance_values = list(reversed([(i + 1) * distance_mod for i in range(n_repeats)]))
+    distance_values = list(reversed([(i) * distance_mod for i in range(n_repeats)]))
 
     potentials = [
-        # SymmetricChainCOMPotential(
-        #     parameters={
-        #         'guidance_interval': 4,
-        #         'guidance_weight': 0.5,
-        #         'resampling_weight': 0.5,
-        #         'buffer': ExponentialInterpolation(
-        #             start=1.0,
-        #             end=5.0,
-        #             alpha=-2.0
-        #         )
-        #     }
-        # ),
-        # VDWOverlapPotential(
-        #     parameters={
-        #         'guidance_interval': 5,
-        #         'guidance_weight': PiecewiseStepFunction(
-        #             thresholds=[0.4],
-        #             values=[0.125, 0.0]
-        #         ),
-        #         'resampling_weight': PiecewiseStepFunction(
-        #             thresholds=[0.6],
-        #             values=[0.01, 0.0]
-        #         ),
-        #         'buffer': 0.225,
-        #     }
-        # ),
-        # ConnectionsPotential(
-        #     parameters={
-        #         'guidance_interval': 1,
-        #         'guidance_weight': 0.15,
-        #         'resampling_weight': 1.0,
-        #         'buffer': 2.0,
-        #     }
-        # ),
-        # PoseBustersPotential(
-        #     parameters={
-        #         'guidance_interval': 1,
-        #         'guidance_weight': 0.05,
-        #         'resampling_weight': 0.1,
-        #         'bond_buffer': 0.20,
-        #         'angle_buffer': 0.20,
-        #         'clash_buffer': 0.15
-        #     }
-        # ),
-        # ChiralAtomPotential(
-        #     parameters={
-        #         'guidance_interval': 1,
-        #         'guidance_weight': 0.10,
-        #         'resampling_weight': 1.0,
-        #         'buffer': 0.52360
-        #     }
-        # ),
-        # StereoBondPotential(
-        #     parameters={
-        #         'guidance_interval': 1,
-        #         'guidance_weight': 0.05,
-        #         'resampling_weight': 1.0,
-        #         'buffer': 0.52360
-        #     }
-        # ),
-        # PlanarBondPotential(
-        #     parameters={
-        #         'guidance_interval': 1,
-        #         'guidance_weight': 0.05,
-        #         'resampling_weight': 1.0,
-        #         'buffer': 0.26180
-        #     }
-        # ),
+        SymmetricChainCOMPotential(
+            parameters={
+                'guidance_interval': 4,
+                'guidance_weight': 0.5,
+                'resampling_weight': 0.5,
+                'buffer': ExponentialInterpolation(
+                    start=1.0,
+                    end=5.0,
+                    alpha=-2.0
+                )
+            }
+        ),
+        VDWOverlapPotential(
+            parameters={
+                'guidance_interval': 5,
+                'guidance_weight': PiecewiseStepFunction(
+                    thresholds=[0.4],
+                    values=[0.125, 0.0]
+                ),
+                'resampling_weight': PiecewiseStepFunction(
+                    thresholds=[0.6],
+                    values=[0.01, 0.0]
+                ),
+                'buffer': 0.225,
+            }
+        ),
+        ConnectionsPotential(
+            parameters={
+                'guidance_interval': 1,
+                'guidance_weight': 0.15,
+                'resampling_weight': 1.0,
+                'buffer': 2.0,
+            }
+        ),
+        PoseBustersPotential(
+            parameters={
+                'guidance_interval': 1,
+                'guidance_weight': 0.05,
+                'resampling_weight': 0.1,
+                'bond_buffer': 0.20,
+                'angle_buffer': 0.20,
+                'clash_buffer': 0.15
+            }
+        ),
+        ChiralAtomPotential(
+            parameters={
+                'guidance_interval': 1,
+                'guidance_weight': 0.10,
+                'resampling_weight': 1.0,
+                'buffer': 0.52360
+            }
+        ),
+        StereoBondPotential(
+            parameters={
+                'guidance_interval': 1,
+                'guidance_weight': 0.05,
+                'resampling_weight': 1.0,
+                'buffer': 0.52360
+            }
+        ),
+        PlanarBondPotential(
+            parameters={
+                'guidance_interval': 1,
+                'guidance_weight': 0.05,
+                'resampling_weight': 1.0,
+                'buffer': 0.26180
+            }
+        ),
         ContactPotential(
             parameters={
                 'guidance_interval': 5,
@@ -531,4 +568,29 @@ def get_potentials():
             # }
         ),
     ]
+
+    # option to only use contact potential for testing
+    dpotential = [
+        ContactPotential(
+            parameters={
+                'guidance_interval': 5,
+                'guidance_weight': RepeatedExponentialInterpolation(
+                    start=0.0, end=1.0, alpha=-2.0, n_repeats=n_repeats
+                    ),
+                'resampling_weight': PiecewiseStepFunction(
+                    thresholds=[1 - 1 / n_repeats], values=[1.0, 0.0]
+                    ),
+                'distance' : PiecewiseStepFunction(
+                    thresholds=distance_thresholds,
+                    values=distance_values
+                    ),
+                'buffer': 1.0, # distance +/- buffer
+                #'buffer': 0.5, # distance +/- buffer, for harmonic use smaller buffer
+                }
+            )
+        ]
+    
+    if distance_potential_only:
+        return dpotential
+
     return potentials
