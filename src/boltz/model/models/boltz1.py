@@ -247,6 +247,9 @@ class Boltz1(LightningModule):
                 self.confidence_module = ConfidenceModule(
                     token_s,
                     token_z,
+                    # add custom pairformer args (required arg for conf module)
+                    # using defaults with 4 blocks, replicating AF3 style confidence
+                    pairformer_args={"num_blocks" : 4, "activation_checkpointing" : True},
                     compute_pae=alpha_pae > 0,
                     **confidence_model_args,
                 )
