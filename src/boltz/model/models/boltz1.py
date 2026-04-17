@@ -871,6 +871,9 @@ class Boltz1(LightningModule):
                     self.complex_lddt["ligand_protein"].update(
                         best_complex_lddt_dict[m], best_complex_total_dict[m]
                     )
+            # extra out_type added with boltz2, not used in boltz1
+            elif m == "modified":
+                continue
             else:
                 self.lddt[m].update(best_lddt_dict[m], best_total_dict[m])
                 self.disto_lddt[m].update(disto_lddt_dict[m], disto_total_dict[m])
