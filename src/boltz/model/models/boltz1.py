@@ -631,7 +631,6 @@ class Boltz1(LightningModule):
                 diffusion_samples=n_samples,
                 run_confidence_sequentially=self.validation_args.run_confidence_sequentially,
             )
-            print("OUT PLDDT:", out["plddt"].shape)
 
         except RuntimeError as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
