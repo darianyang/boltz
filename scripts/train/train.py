@@ -20,6 +20,8 @@ from pytorch_lightning.utilities import rank_zero_only
 
 from boltz.data.module.training import BoltzTrainingDataModule, DataConfig
 
+# needed to allow backwards pass with use_kernels (since 2.1.1)
+torch.backends.cuda.matmul.allow_tf32 = True
 
 @dataclass
 class TrainConfig:
