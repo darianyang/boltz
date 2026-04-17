@@ -59,6 +59,7 @@ class Boltz1(LightningModule):
         atom_feature_dim: int = 128,
         confidence_prediction: bool = False,
         confidence_imitate_trunk: bool = False,
+        token_level_confidence: bool = True,
         alpha_pae: float = 0.0,
         structure_prediction_training: bool = True,
         atoms_per_window_queries: int = 32,
@@ -231,11 +232,13 @@ class Boltz1(LightningModule):
 
         self.structure_prediction_training = structure_prediction_training
         self.confidence_imitate_trunk = confidence_imitate_trunk
+        self.token_level_confidence = token_level_confidence
         if self.confidence_prediction:
             if self.confidence_imitate_trunk:
                 self.confidence_module = ConfidenceModule(
                     token_s,
                     token_z,
+                    token_level_confidence=token_level_confidence,
                     compute_pae=alpha_pae > 0,
                     imitate_trunk=True,
                     pairformer_args=pairformer_args,
@@ -247,6 +250,7 @@ class Boltz1(LightningModule):
                 self.confidence_module = ConfidenceModule(
                     token_s,
                     token_z,
+                    token_level_confidence=token_level_confidence,
                     compute_pae=alpha_pae > 0,
                     **confidence_model_args,
                 )
@@ -504,6 +508,7 @@ class Boltz1(LightningModule):
                 true_coords,
                 true_coords_resolved_mask,
                 alpha_pae=self.alpha_pae,
+                token_level_confidence=self.token_level_confidence,
                 multiplicity=self.training_args.diffusion_samples,
             )
         else:
@@ -626,6 +631,7 @@ class Boltz1(LightningModule):
                 diffusion_samples=n_samples,
                 run_confidence_sequentially=self.validation_args.run_confidence_sequentially,
             )
+            print("OUT PLDDT:", out["plddt"].shape)
 
         except RuntimeError as e:  # catch out of memory exceptions
             if "out of memory" in str(e):
@@ -725,6 +731,14 @@ class Boltz1(LightningModule):
 
         # Filtering based on confidence
         if self.confidence_prediction and n_samples > 1:
+            # if token_level_confidence is False, then need to convert pLDDT to per-token
+            if not self.token_level_confidence:
+                atom_to_token = batch["atom_to_token"].float()
+                atom_to_token = atom_to_token.repeat_interleave(n_samples, 0)
+                # Convert out['plddt'] to token-level representation
+                plddt_atom = out['plddt'].unsqueeze(-1) # add extra dim for bmm
+                pred_plddt = torch.bmm(atom_to_token.transpose(1, 2), plddt_atom).squeeze(-1)
+
             # note: for now we don't have pae predictions so have to use pLDDT instead of pTM
             # also, while AF3 differentiates the best prediction per confidence type we are currently not doing it
             # consider this in the future as well as weighing the different pLLDT types before aggregation
@@ -732,7 +746,8 @@ class Boltz1(LightningModule):
                 pred_atom_coords=out["sample_atom_coords"],
                 feats=batch,
                 true_atom_coords=true_coords,
-                pred_lddt=out["plddt"],
+                #pred_lddt=out["plddt"],
+                pred_lddt=pred_plddt,
                 true_coords_resolved_mask=true_coords_resolved_mask,
                 multiplicity=n_samples,
             )

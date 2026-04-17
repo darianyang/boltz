@@ -9,6 +9,7 @@ def confidence_loss(
     feats,
     true_coords,
     true_coords_resolved_mask,
+    token_level_confidence=True,
     multiplicity=1,
     alpha_pae=0.0,
 ):
@@ -24,6 +25,8 @@ def confidence_loss(
         The atom coordinates after symmetry correction
     true_coords_resolved_mask: torch.Tensor
         The resolved mask after symmetry correction
+    token_level_confidence: bool, optional
+        Whether to compute token-level confidence loss, by default True
     multiplicity: int, optional
         The diffusion batch size, by default 1
     alpha_pae: float, optional
@@ -42,6 +45,7 @@ def confidence_loss(
         true_coords,
         true_coords_resolved_mask,
         feats,
+        token_level_confidence=token_level_confidence,
         multiplicity=multiplicity,
     )
     pde = pde_loss(
@@ -56,6 +60,7 @@ def confidence_loss(
         model_out["resolved_logits"],
         feats,
         true_coords_resolved_mask,
+        token_level_confidence=token_level_confidence,
         multiplicity=multiplicity,
     )
 
@@ -88,6 +93,7 @@ def resolved_loss(
     pred_resolved,
     feats,
     true_coords_resolved_mask,
+    token_level_confidence=True,
     multiplicity=1,
 ):
     """Compute resolved loss.
@@ -100,6 +106,8 @@ def resolved_loss(
         Dictionary containing the model input
     true_coords_resolved_mask: torch.Tensor
         The resolved mask after symmetry correction
+    token_level_confidence: bool, optional
+        Whether to compute token-level confidence loss, by default True
     multiplicity: int, optional
         The diffusion batch size, by default 1
 
@@ -109,15 +117,19 @@ def resolved_loss(
         Resolved loss
 
     """
-
-    # extract necessary features
-    token_to_rep_atom = feats["token_to_rep_atom"]
-    token_to_rep_atom = token_to_rep_atom.repeat_interleave(multiplicity, 0).float()
-    ref_mask = torch.bmm(
-        token_to_rep_atom, true_coords_resolved_mask.unsqueeze(-1).float()
-    ).squeeze(-1)
-    pad_mask = feats["token_pad_mask"]
-    pad_mask = pad_mask.repeat_interleave(multiplicity, 0).float()
+    if token_level_confidence:
+        # extract necessary features
+        token_to_rep_atom = feats["token_to_rep_atom"]
+        token_to_rep_atom = token_to_rep_atom.repeat_interleave(multiplicity, 0).float()
+        ref_mask = torch.bmm(
+            token_to_rep_atom, true_coords_resolved_mask.unsqueeze(-1).float()
+        ).squeeze(-1)
+        pad_mask = feats["token_pad_mask"]
+        pad_mask = pad_mask.repeat_interleave(multiplicity, 0).float()
+    else:
+        ref_mask = true_coords_resolved_mask.float()
+        pad_mask = feats["atom_pad_mask"]
+        pad_mask = pad_mask.repeat_interleave(multiplicity, 0).float()
 
     # compute loss
     log_softmax_resolved = torch.nn.functional.log_softmax(pred_resolved, dim=-1)
@@ -139,6 +151,7 @@ def plddt_loss(
     true_atom_coords,
     true_coords_resolved_mask,
     feats,
+    token_level_confidence=True,
     multiplicity=1,
 ):
     """Compute plddt loss.
@@ -155,6 +168,8 @@ def plddt_loss(
         The resolved mask after symmetry correction
     feats: Dict[str, torch.Tensor]
         Dictionary containing the model input
+    token_level_confidence: bool, optional
+        Whether to compute token-level confidence loss, by default True
     multiplicity: int, optional
         The diffusion batch size, by default 1
 
@@ -185,16 +200,17 @@ def plddt_loss(
     token_to_rep_atom = feats["token_to_rep_atom"].float()
     token_to_rep_atom = token_to_rep_atom.repeat_interleave(multiplicity, 0)
 
-    true_token_coords = torch.bmm(token_to_rep_atom, true_atom_coords)
-    pred_token_coords = torch.bmm(token_to_rep_atom, pred_atom_coords)
+    if token_level_confidence:
+        true_token_coords = torch.bmm(token_to_rep_atom, true_atom_coords)
+        pred_token_coords = torch.bmm(token_to_rep_atom, pred_atom_coords)
 
     # compute true lddt
     true_d = torch.cdist(
-        true_token_coords,
+        true_token_coords if token_level_confidence else true_atom_coords,
         torch.bmm(R_set_to_rep_atom, true_atom_coords),
     )
     pred_d = torch.cdist(
-        pred_token_coords,
+        pred_token_coords if token_level_confidence else pred_atom_coords,
         torch.bmm(R_set_to_rep_atom, pred_atom_coords),
     )
 
@@ -205,8 +221,11 @@ def plddt_loss(
         * (1 - torch.eye(pair_mask.shape[1], device=pair_mask.device))[None, :, :]
     )
     pair_mask = torch.einsum("bnm,bkm->bnk", pair_mask, R_set_to_rep_atom)
-    pair_mask = torch.bmm(token_to_rep_atom, pair_mask)
-    atom_mask = torch.bmm(token_to_rep_atom, atom_mask.unsqueeze(-1).float())
+
+    if token_level_confidence:
+        pair_mask = torch.bmm(token_to_rep_atom, pair_mask)
+        atom_mask = torch.bmm(token_to_rep_atom, atom_mask.unsqueeze(-1).float())
+
     is_nucleotide_R_element = torch.bmm(
         R_set_to_rep_atom, torch.bmm(atom_to_token, is_nucleotide_token.unsqueeze(-1))
     ).squeeze(-1)
