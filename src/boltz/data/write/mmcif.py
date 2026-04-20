@@ -17,6 +17,7 @@ from boltz.data.types import Structure
 def to_mmcif(
     structure: Structure,
     plddts: Optional[Tensor] = None,
+    token_level_confidence: bool = True,
     boltz2: bool = False,
 ) -> str:  # noqa: C901, PLR0915, PLR0912
     """Write a structure into an MMCIF file.
@@ -138,6 +139,9 @@ def to_mmcif(
             # Tracks ligand indices.
             ligand_index_offset = 0
 
+            # track atom_index
+            atom_index = 1
+
             # Add all atom sites.
             for chain in structure.chains:
                 # We rename the chains in alphabetical order
@@ -187,31 +191,42 @@ def to_mmcif(
                         residue_index = residue["res_idx"] + 1
                         pos = atom_coords[i]
 
-                        if record_type != "HETATM":
-                            # The current residue plddt is stored at the res_num index unless a ligand has previouly been added.
-                            biso = (
-                                100.00
-                                if plddts is None
-                                else round(
-                                    plddts[res_num + ligand_index_offset].item() * 100,
-                                    3,
+                        if token_level_confidence:
+                            if record_type != "HETATM":
+                                # The current residue plddt is stored at the res_num index unless a ligand has previouly been added.
+                                biso = (
+                                    100.00
+                                    if plddts is None
+                                    else round(
+                                        plddts[res_num + ligand_index_offset].item() * 100,
+                                        3,
+                                    )
                                 )
-                            )
-                            prev_polymer_resnum = res_num
+                                prev_polymer_resnum = res_num
+                            else:
+                                # If not a polymer resnum, we can get index into plddts by adding offset relative to previous polymer resnum.
+                                ligand_index_offset += 1
+                                biso = (
+                                    100.00
+                                    if plddts is None
+                                    else round(
+                                        plddts[
+                                            prev_polymer_resnum + ligand_index_offset
+                                        ].item()
+                                        * 100,
+                                        3,
+                                    )
+                                )
+                        # all-atom level confidence, no need to separate polymer vs non-polymer
                         else:
-                            # If not a polymer resnum, we can get index into plddts by adding offset relative to previous polymer resnum.
-                            ligand_index_offset += 1
                             biso = (
                                 100.00
                                 if plddts is None
-                                else round(
-                                    plddts[
-                                        prev_polymer_resnum + ligand_index_offset
-                                    ].item()
-                                    * 100,
-                                    3,
-                                )
-                            )
+                                else round(plddts[atom_index-1].item() * 100, 3)
+                            )          
+
+                        # enumerate atom_index
+                        atom_index += 1
 
                         yield Atom(
                             asym_unit=asym_unit_map[chain_idx],

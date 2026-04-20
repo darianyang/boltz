@@ -1039,6 +1039,12 @@ def cli() -> None:
     is_flag=True,
     help=" to dump the s and z embeddings into a npz file. Default is False.",
 )
+@click.option(
+    "--token_level_confidence",
+    type=bool,
+    default=True,
+    help="Whether to write token-level pLDDT resolved values to structure. Default is True.",
+)
 def predict(  # noqa: C901, PLR0915, PLR0912
     data: str,
     out_dir: str,
@@ -1077,6 +1083,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     num_subsampled_msa: int = 1024,
     no_kernels: bool = False,
     write_embeddings: bool = False,
+    token_level_confidence: bool = True,
 ) -> None:
     """Run predictions with Boltz."""
     # If cpu, write a friendly warning
@@ -1250,6 +1257,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         output_format=output_format,
         boltz2=model == "boltz2",
         write_embeddings=write_embeddings,
+        token_level_confidence=token_level_confidence,
     )
 
     # Set up trainer
@@ -1322,6 +1330,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             pairformer_args=asdict(pairformer_args),
             msa_args=asdict(msa_args),
             steering_args=asdict(steering_args),
+            token_level_confidence=token_level_confidence,
         )
         model_module.eval()
 

@@ -22,6 +22,7 @@ class BoltzWriter(BasePredictionWriter):
         data_dir: str,
         output_dir: str,
         output_format: Literal["pdb", "mmcif"] = "mmcif",
+        token_level_confidence: bool = True,
         boltz2: bool = False,
         write_embeddings: bool = False,
     ) -> None:
@@ -45,6 +46,7 @@ class BoltzWriter(BasePredictionWriter):
         self.boltz2 = boltz2
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.write_embeddings = write_embeddings
+        self.token_level_confidence = token_level_confidence
 
     def write_on_batch_end(
         self,
@@ -112,7 +114,7 @@ class BoltzWriter(BasePredictionWriter):
                     coord_unpad = [(x,) for x in coord_unpad]
                     coord_unpad = np.array(coord_unpad, dtype=Coords)
 
-                # Mew residue table
+                # New residue table
                 residues = structure.residues
                 residues["is_present"] = True
 
@@ -163,13 +165,18 @@ class BoltzWriter(BasePredictionWriter):
                     path = struct_dir / f"{outname}.pdb"
                     with path.open("w") as f:
                         f.write(
-                            to_pdb(new_structure, plddts=plddts, boltz2=self.boltz2)
+                            to_pdb(new_structure, plddts=plddts,
+                                   token_level_confidence=self.token_level_confidence,
+                                   boltz2=self.boltz2)
                         )
                 elif self.output_format == "mmcif":
                     path = struct_dir / f"{outname}.cif"
                     with path.open("w") as f:
+                        # TODO: add token_level_confidence to mmcif output as well
                         f.write(
-                            to_mmcif(new_structure, plddts=plddts, boltz2=self.boltz2)
+                            to_mmcif(new_structure, plddts=plddts, 
+                                     token_level_confidence=self.token_level_confidence,
+                                     boltz2=self.boltz2)
                         )
                 else:
                     path = struct_dir / f"{outname}.npz"

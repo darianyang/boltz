@@ -12,6 +12,7 @@ def to_pdb(
     structure: Structure,
     plddts: Optional[Tensor] = None,
     boltz2: bool = False,
+    token_level_confidence: bool = True,
 ) -> str:  # noqa: PLR0915
     """Write a structure into a PDB file.
 
@@ -100,27 +101,35 @@ def to_pdb(
                     "LIG" if record_type == "HETATM" else str(residue["name"][:3])
                 )
 
-                if record_type != "HETATM":
-                    # The current residue plddt is stored at the res_num index unless a ligand has previouly been added.
-                    b_factor = (
-                        100.00
-                        if plddts is None
-                        else round(
-                            plddts[res_num + ligand_index_offset].item() * 100, 2
+                if token_level_confidence:
+                    if record_type != "HETATM":
+                        # The current residue plddt is stored at the res_num index unless a ligand has previouly been added.
+                        b_factor = (
+                            100.00
+                            if plddts is None
+                            else round(
+                                plddts[res_num + ligand_index_offset].item() * 100, 2
+                            )
                         )
-                    )
-                    prev_polymer_resnum = res_num
+                        prev_polymer_resnum = res_num
+                    else:
+                        # If not a polymer resnum, we can get index into plddts by adding offset relative to previous polymer resnum.
+                        ligand_index_offset += 1
+                        b_factor = (
+                            100.00
+                            if plddts is None
+                            else round(
+                                plddts[prev_polymer_resnum + ligand_index_offset].item()
+                                * 100,
+                                2,
+                            )
+                        )
+                # if using atom_level, no need to separate polymer vs non-polymer
                 else:
-                    # If not a polymer resnum, we can get index into plddts by adding offset relative to previous polymer resnum.
-                    ligand_index_offset += 1
                     b_factor = (
                         100.00
                         if plddts is None
-                        else round(
-                            plddts[prev_polymer_resnum + ligand_index_offset].item()
-                            * 100,
-                            2,
-                        )
+                        else round(plddts[atom_index-1].item() * 100, 2)
                     )
 
                 # PDB is a columnar format, every space matters here!
