@@ -43,8 +43,7 @@ class BoltzProcessedInput:
 class PairformerArgs:
     """Pairformer arguments."""
 
-    #num_blocks: int = 48
-    num_blocks: int = 8
+    num_blocks: int = 48
     num_heads: int = 16
     dropout: float = 0.0
     activation_checkpointing: bool = False
@@ -58,7 +57,6 @@ class MSAModuleArgs:
 
     msa_s: int = 64
     msa_blocks: int = 4
-    #msa_blocks: int = 1
     msa_dropout: float = 0.0
     z_dropout: float = 0.0
     pairwise_head_width: int = 32
@@ -66,6 +64,7 @@ class MSAModuleArgs:
     activation_checkpointing: bool = False
     offload_to_cpu: bool = False
     use_trifast: bool = True
+    mask_rate_msa: float = 0.0
 
 
 @dataclass
@@ -73,10 +72,8 @@ class BoltzDiffusionParams:
     """Diffusion process parameters."""
 
     gamma_0: float = 0.605
-    #gamma_0: float = 0.0 # ODE
     gamma_min: float = 1.107
     noise_scale: float = 0.901
-    #noise_scale: float = 1.0 # ODE
     rho: float = 8
     step_scale: float = 1.638
     sigma_min: float = 0.0004
@@ -608,6 +605,12 @@ def cli() -> None:
     is_flag=True,
     help="Whether to not use potentials for steering. Default is False.",
 )
+@click.option(
+    "--mask_rate_msa",
+    type=click.FloatRange(0.0, 1.0),
+    default=0.0,
+    help="The masking rate for MSA sequences (replace with X). Default is 0.1.",
+)
 def predict(
     data: str,
     out_dir: str,
@@ -629,6 +632,7 @@ def predict(
     msa_server_url: str = "https://api.colabfold.com",
     msa_pairing_strategy: str = "greedy",
     no_potentials: bool = False,
+    mask_rate_msa: float = 0.0,
 ) -> None:
     """Run predictions with Boltz-1."""
     # If cpu, write a friendly warning
@@ -721,8 +725,8 @@ def predict(
         "recycling_steps": recycling_steps,
         "sampling_steps": sampling_steps,
         "diffusion_samples": diffusion_samples,
-        #"write_confidence_summary": True,
-        "write_confidence_summary": False,
+        "write_confidence_summary": True,
+        #"write_confidence_summary": False,
         "write_full_pae": write_full_pae,
         "write_full_pde": write_full_pde,
     }
@@ -731,6 +735,9 @@ def predict(
 
     pairformer_args = PairformerArgs(use_trifast=(accelerator != "cpu"))
     msa_module_args = MSAModuleArgs(use_trifast=(accelerator != "cpu"))
+
+    # set MSA masking rate
+    msa_module_args.mask_rate_msa = mask_rate_msa
 
     steering_args = BoltzSteeringParams()
     if no_potentials:

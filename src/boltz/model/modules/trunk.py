@@ -130,6 +130,7 @@ class MSAModule(nn.Module):
         use_paired_feature: bool = False,
         offload_to_cpu: bool = False,
         use_trifast: bool = False,
+        mask_rate_msa: float = 0.0,
         **kwargs,
     ) -> None:
         """Initialize the MSA module.
@@ -158,6 +159,8 @@ class MSAModule(nn.Module):
             Whether to use the paired feature, by default False
         offload_to_cpu : bool, optional
             Whether to offload to CPU, by default False
+        mask_rate_msa : float, optional
+            The amount of MSA column masking with unknown residue (X), by default 0.0 (no masking).
 
         """
         super().__init__()
@@ -165,6 +168,7 @@ class MSAModule(nn.Module):
         self.msa_dropout = msa_dropout
         self.z_dropout = z_dropout
         self.use_paired_feature = use_paired_feature
+        self.mask_rate_msa = mask_rate_msa
 
         self.s_proj = nn.Linear(s_input_dim, msa_s, bias=False)
         self.msa_proj = nn.Linear(
@@ -248,6 +252,18 @@ class MSAModule(nn.Module):
 
         # Load relevant features
         msa = feats["msa"]
+        # Optional MSA column masking
+        if self.mask_rate_msa > 0.0:
+            # generate random values for masking
+            rand = torch.rand(msa.shape, device=msa.device)
+            # create mask: check if rand is less than mask_rate_msa for probability
+            # then ensure positions already marked as X/UNK are not masked again
+            mask = (rand < self.mask_rate_msa) & (msa != const.token_ids["UNK"])
+            # prevent masking of first MSA sequence (target seq)
+            mask[:, 0, :] = False
+            # apply mask to MSA tensor: replace values in msa with UNK where mask is True
+            msa = torch.where(mask, torch.full_like(msa, const.token_ids["UNK"]), msa)
+
         has_deletion = feats["has_deletion"].unsqueeze(-1)
         deletion_value = feats["deletion_value"].unsqueeze(-1)
         is_paired = feats["msa_paired"].unsqueeze(-1)
