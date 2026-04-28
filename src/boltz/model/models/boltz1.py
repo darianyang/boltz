@@ -60,6 +60,7 @@ class Boltz1(LightningModule):
         confidence_prediction: bool = False,
         confidence_imitate_trunk: bool = False,
         token_level_confidence: bool = True,
+        token_level_pae: bool = True,
         alpha_pae: float = 0.0,
         structure_prediction_training: bool = True,
         atoms_per_window_queries: int = 32,
@@ -233,12 +234,14 @@ class Boltz1(LightningModule):
         self.structure_prediction_training = structure_prediction_training
         self.confidence_imitate_trunk = confidence_imitate_trunk
         self.token_level_confidence = token_level_confidence
+        self.token_level_pae = token_level_pae
         if self.confidence_prediction:
             if self.confidence_imitate_trunk:
                 self.confidence_module = ConfidenceModule(
                     token_s,
                     token_z,
                     token_level_confidence=token_level_confidence,
+                    token_level_pae=token_level_pae,
                     compute_pae=alpha_pae > 0,
                     imitate_trunk=True,
                     pairformer_args=pairformer_args,
@@ -251,6 +254,7 @@ class Boltz1(LightningModule):
                     token_s,
                     token_z,
                     token_level_confidence=token_level_confidence,
+                    token_level_pae=token_level_pae,
                     compute_pae=alpha_pae > 0,
                     **confidence_model_args,
                 )
@@ -509,6 +513,7 @@ class Boltz1(LightningModule):
                 true_coords_resolved_mask,
                 alpha_pae=self.alpha_pae,
                 token_level_confidence=self.token_level_confidence,
+                token_level_pae=self.token_level_pae,
                 multiplicity=self.training_args.diffusion_samples,
             )
         else:
@@ -737,6 +742,16 @@ class Boltz1(LightningModule):
                 # Convert out['plddt'] to token-level representation
                 plddt_atom = out['plddt'].unsqueeze(-1) # add extra dim for bmm
                 pred_plddt = torch.bmm(atom_to_token.transpose(1, 2), plddt_atom).squeeze(-1)
+
+            # # TODO: same as above for pLDDT but for higher dim atomPAE, convert to per-token
+            # actually, since saving atom pae to sep dict item, below not needed, already converted to token-level
+            # if not self.token_level_pae:
+            #     atom_to_token = batch["atom_to_token"].float()
+            #     atom_to_token = atom_to_token.repeat_interleave(n_samples, 0)
+            #     # Convert out['pae'] to token-level representation
+            #     pae_atom = out['pae'] # shape (B*n_samples, num_atoms, num_atoms)
+            #     # shape (B*n_samples, num_tokens, num_tokens)
+            #     pred_pae = torch.bmm(atom_to_token.transpose(1, 2), torch.bmm(pae_atom, atom_to_token))
 
             # note: for now we don't have pae predictions so have to use pLDDT instead of pTM
             # also, while AF3 differentiates the best prediction per confidence type we are currently not doing it
@@ -1208,6 +1223,8 @@ class Boltz1(LightningModule):
                     pred_dict[key] = out[key]
             if self.predict_args.get("write_full_pae", True):
                 pred_dict["pae"] = out["pae"]
+                if not self.token_level_pae:
+                    pred_dict["atom_pae"] = out["atom_pae"]
             if self.predict_args.get("write_full_pde", False):
                 pred_dict["pde"] = out["pde"]
             return pred_dict

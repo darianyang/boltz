@@ -28,6 +28,7 @@ class ConfidenceModule(nn.Module):
         num_dist_bins=64,
         max_dist=22,
         token_level_confidence=True,
+        token_level_pae=True,
         add_s_to_z_prod=False,
         add_s_input_to_s=False,
         use_s_diffusion=False,
@@ -55,6 +56,8 @@ class ConfidenceModule(nn.Module):
             The maximum distance, by default 22.
         token_level_confidence : bool, optional
             Whether to compute token level confidence, by default True.
+        token_level_pae : bool, optional
+            Whether to compute token level pae, by default True.
         add_s_to_z_prod : bool, optional
             Whether to add s to z product, by default False.
         add_s_input_to_s : bool, optional
@@ -87,6 +90,7 @@ class ConfidenceModule(nn.Module):
             token_s + 2 * const.num_tokens + 1 + len(const.pocket_contact_info)
         )
         self.token_level_confidence = token_level_confidence
+        self.token_level_pae = token_level_pae
 
         self.use_s_diffusion = use_s_diffusion
         if use_s_diffusion:
@@ -181,6 +185,7 @@ class ConfidenceModule(nn.Module):
             token_z,
             compute_pae=compute_pae,
             token_level_confidence=token_level_confidence,
+            token_level_pae=token_level_pae,
             **confidence_args,
         )
 
@@ -350,6 +355,7 @@ class ConfidenceHeads(nn.Module):
         num_pae_bins=64,
         compute_pae: bool = True,
         token_level_confidence=True,
+        token_level_pae=True,
     ):
         """Initialize the confidence head.
 
@@ -369,11 +375,14 @@ class ConfidenceHeads(nn.Module):
             Whether to compute pae, by default False
         token_level_confidence : bool, optional
             Whether to compute token level confidence, by default True.
+        token_level_pae : bool, optional
+            Whether to compute token level pae, by default True.
         """
         super().__init__()
         self.max_num_atoms_per_token = 23
         self.token_level_confidence = token_level_confidence
-        
+        self.token_level_pae = token_level_pae
+
         if token_level_confidence:
             self.to_plddt_logits = LinearNoBias(token_s, num_plddt_bins)
             self.to_resolved_logits = LinearNoBias(token_s, 2)
@@ -388,7 +397,13 @@ class ConfidenceHeads(nn.Module):
         self.to_pde_logits = LinearNoBias(token_z, num_pde_bins)
         self.compute_pae = compute_pae
         if self.compute_pae:
-            self.to_pae_logits = LinearNoBias(token_z, num_pae_bins)
+            if self.token_level_pae:
+                self.to_pae_logits = LinearNoBias(token_z, num_pae_bins)
+            else:
+                # project from Cz to num_pae_bins * max_num_atoms_per_token^2
+                self.to_pae_logits = LinearNoBias(
+                    token_z, num_pae_bins * self.max_num_atoms_per_token**2
+                )
 
     def forward(
         self,
@@ -477,6 +492,8 @@ class ConfidenceHeads(nn.Module):
                 ),
                 value=0,
             )
+
+            # token to atom conversion for plddt logits
             plddt_logits = plddt_logits.reshape(B, N, self.max_num_atoms_per_token, -1)
             plddt_logits = plddt_logits[:, max_num_atoms_mask.squeeze(0)]
             plddt_logits = F.pad(
@@ -495,6 +512,7 @@ class ConfidenceHeads(nn.Module):
             atom_pad_mask = feats["atom_pad_mask"].repeat_interleave(multiplicity, 0)
             plddt = compute_aggregated_metric(plddt_logits)
 
+            # calc other metrics
             complex_plddt = (plddt * atom_pad_mask).sum(dim=-1) / atom_pad_mask.sum(
                 dim=-1
             )
@@ -572,7 +590,131 @@ class ConfidenceHeads(nn.Module):
             complex_ipde=complex_ipde,
         )
         if self.compute_pae:
-            out_dict["pae_logits"] = pae_logits
+            # if all-atom PAE, decode atom logits and aggregate back to token logits
+            if not self.token_level_pae:
+                B, N_token, _, total_dim = pae_logits.shape
+                num_pae_bins = total_dim // (self.max_num_atoms_per_token**2)
+
+                # reshape to 6D tensor for atom-level PAE logits
+                atom_logits_6d = pae_logits.view(
+                    B,
+                    N_token,
+                    N_token,
+                    self.max_num_atoms_per_token,
+                    self.max_num_atoms_per_token,
+                    num_pae_bins,
+                )
+
+                # permute to swap N_token and max_num_atoms_per_token dimensions, then reshape
+                atom_pae_logits = atom_logits_6d.permute(0, 1, 3, 2, 4, 5).reshape(
+                    B,
+                    N_token * self.max_num_atoms_per_token,
+                    N_token * self.max_num_atoms_per_token,
+                    num_pae_bins,
+                )
+
+                # prep atom_to_token mapping and atom_pad_mask
+                atom_to_token = feats["atom_to_token"].float().repeat_interleave(
+                    multiplicity, 0
+                )
+                atom_pad_mask = feats["atom_pad_mask"].repeat_interleave(
+                    multiplicity, 0
+                ).bool()
+
+                # map each true atom to its packed slot index token_idx * max_atoms + within_token_idx
+                # find each atom's token index (parent token per atom)
+                # and convert to long/int64 for indexing
+                token_idx_per_atom = torch.argmax(atom_to_token, dim=-1).long()
+                atom_to_token_long = atom_to_token.long()
+                # find the atom's index within its parent token
+                # computes "0th atom in token, 1st atom in token, etc" for each atom
+                within_token_idx = torch.sum(
+                    (torch.cumsum(atom_to_token_long, dim=1) - 1) * atom_to_token_long,
+                    dim=-1,
+                )
+                # computed packed slot index for each atom
+                # maps each atom to packed slot coordinate [0, N_token * max_atoms]
+                atom_slot_idx = (
+                    token_idx_per_atom * self.max_num_atoms_per_token + within_token_idx
+                )
+                # zero padded atoms (index of 0)
+                atom_slot_idx = torch.where(
+                    atom_pad_mask,
+                    atom_slot_idx,
+                    torch.zeros_like(atom_slot_idx),
+                )
+
+                # gather packed slot grid -> true atom padded grid
+                # calc row_index and col_index for gathering from the flattened 
+                # [B, N_token * max_atoms, N_token * max_atoms, num_pae_bins] grid                
+                row_index = atom_slot_idx[:, :, None, None].expand(
+                    -1,
+                    -1,
+                    atom_pae_logits.shape[2],
+                    atom_pae_logits.shape[3],
+                )
+                # gather the atom-level pae logits for each true atom pair
+                atom_pae_logits = torch.gather(atom_pae_logits, dim=1, index=row_index)
+                # calc col_index and gather
+                col_index = atom_slot_idx[:, None, :, None].expand(
+                    -1,
+                    atom_pae_logits.shape[1],
+                    -1,
+                    atom_pae_logits.shape[3],
+                )
+                # gather the atom-level pae logits for each true atom pair
+                atom_pae_logits = torch.gather(atom_pae_logits, dim=2, index=col_index)
+
+                # mask out padded atoms
+                atom_pair_mask = (
+                    atom_pad_mask[:, :, None] * atom_pad_mask[:, None, :]
+                ).to(atom_pae_logits.dtype)
+                atom_pae_logits = atom_pae_logits * atom_pair_mask.unsqueeze(-1)
+
+                # sum atoms per token to get n_atoms per token
+                num_atoms_per_token = atom_to_token.sum(dim=1).long()
+                # create slot ids for each atom up to max_num_atoms_per_token
+                slot_idx = torch.arange(
+                    self.max_num_atoms_per_token, device=pae_logits.device
+                ).view(1, 1, -1)
+                # create mask for valid slots per token based on num_atoms_per_token
+                # True for real atom slots, False for padded atom slots
+                valid_slot = slot_idx < num_atoms_per_token.unsqueeze(-1)
+
+                # save atom-level pae logits and pae for true atoms
+                out_dict["atom_pae_logits"] = atom_pae_logits # TODO: maybe less memory if not saved
+                out_dict["atom_pae"] = compute_aggregated_metric(
+                    atom_pae_logits, end=32
+                )
+
+                # aggregate atom-level pae logits back to token-level
+                # convert to probabilities
+                atom_probs_6d = nn.functional.softmax(atom_logits_6d, dim=-1)
+                # mask for valid atom pairs
+                valid_atom_pair_6d = (
+                    valid_slot[:, :, None, :, None]
+                    * valid_slot[:, None, :, None, :]
+                ).to(atom_probs_6d.dtype)
+                valid_atom_pair_6d = valid_atom_pair_6d.unsqueeze(-1)
+
+                # avg atom-pair probs into token-pair probs
+                # sum the probs for each valid atom-pair
+                # then divide by the number of valid atom pairs to get the average token prob
+                token_probs = torch.sum(
+                    atom_probs_6d * valid_atom_pair_6d, dim=(3, 4)
+                ) / (torch.sum(valid_atom_pair_6d, dim=(3, 4)) + 1e-8)
+                
+                # TODO: could use these token_probs from softmax directly later instead of full compute_agg_metric
+                # would allow skip of below step of converting back to logits
+
+                # convert back to logits and save token level pae logits
+                pae_logits = torch.log(token_probs + 1e-8)
+                #out_dict["token_pae_logits"] = pae_logits_metrics
+                out_dict["pae_logits"] = pae_logits
+            else:
+                out_dict["pae_logits"] = pae_logits
+
+            # calc and save token-level metrics
             out_dict["pae"] = compute_aggregated_metric(pae_logits, end=32)
             ptm, iptm, ligand_iptm, protein_iptm, pair_chains_iptm = compute_ptms(
                 pae_logits, x_pred, feats, multiplicity
@@ -582,5 +724,7 @@ class ConfidenceHeads(nn.Module):
             out_dict["ligand_iptm"] = ligand_iptm
             out_dict["protein_iptm"] = protein_iptm
             out_dict["pair_chains_iptm"] = pair_chains_iptm
+
+        #print(f"{out_dict['atom_pae'].shape=}, {out_dict['pae'].shape=}")
 
         return out_dict

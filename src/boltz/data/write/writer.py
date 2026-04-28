@@ -23,6 +23,7 @@ class BoltzWriter(BasePredictionWriter):
         output_dir: str,
         output_format: Literal["pdb", "mmcif"] = "mmcif",
         token_level_confidence: bool = True,
+        token_level_pae: bool = True,
         boltz2: bool = False,
         write_embeddings: bool = False,
     ) -> None:
@@ -47,6 +48,7 @@ class BoltzWriter(BasePredictionWriter):
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.write_embeddings = write_embeddings
         self.token_level_confidence = token_level_confidence
+        self.token_level_pae = token_level_pae
 
     def write_on_batch_end(
         self,
@@ -172,7 +174,6 @@ class BoltzWriter(BasePredictionWriter):
                 elif self.output_format == "mmcif":
                     path = struct_dir / f"{outname}.cif"
                     with path.open("w") as f:
-                        # TODO: add token_level_confidence to mmcif output as well
                         f.write(
                             to_mmcif(new_structure, plddts=plddts, 
                                      token_level_confidence=self.token_level_confidence,
@@ -243,6 +244,13 @@ class BoltzWriter(BasePredictionWriter):
                         / f"pae_{record.id}_model_{idx_to_rank[model_idx]}.npz"
                     )
                     np.savez_compressed(path, pae=pae.cpu().numpy())
+                    if not self.token_level_pae and "atom_pae" in prediction:
+                        atom_pae = prediction["atom_pae"][model_idx]
+                        path = (
+                            struct_dir
+                            / f"atom_pae_{record.id}_model_{idx_to_rank[model_idx]}.npz"
+                        )
+                        np.savez_compressed(path, atom_pae=atom_pae.cpu().numpy())
 
                 # Save pde
                 if "pde" in prediction:

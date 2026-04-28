@@ -10,6 +10,7 @@ def confidence_loss(
     true_coords,
     true_coords_resolved_mask,
     token_level_confidence=True,
+    token_level_pae=True,
     multiplicity=1,
     alpha_pae=0.0,
 ):
@@ -27,6 +28,8 @@ def confidence_loss(
         The resolved mask after symmetry correction
     token_level_confidence: bool, optional
         Whether to compute token-level confidence loss, by default True
+    token_level_pae: bool, optional
+        Whether to compute token-level pae loss, by default True.
     multiplicity: int, optional
         The diffusion batch size, by default 1
     alpha_pae: float, optional
@@ -67,11 +70,12 @@ def confidence_loss(
     pae = 0.0
     if alpha_pae > 0.0:
         pae = pae_loss(
-            model_out["pae_logits"],
+            model_out["pae_logits"] if token_level_pae else model_out["atom_pae_logits"],
             model_out["sample_atom_coords"],
             true_coords,
             true_coords_resolved_mask,
             feats,
+            token_level_pae,
             multiplicity,
         )
 
@@ -332,6 +336,7 @@ def pae_loss(
     true_atom_coords,
     true_coords_resolved_mask,
     feats,
+    token_level_pae=True,
     multiplicity=1,
     max_dist=32.0,
 ):
@@ -349,6 +354,8 @@ def pae_loss(
         The resolved mask after symmetry correction
     feats: Dict[str, torch.Tensor]
         Dictionary containing the model input
+    token_level_pae: bool, optional
+        Whether to compute token-level pae loss, by default True.
     multiplicity: int, optional
         The diffusion batch size, by default 1
 
@@ -358,7 +365,13 @@ def pae_loss(
         Pae loss
 
     """
+    # get atom_to_token mapping
+    atom_to_token = feats["atom_to_token"].float()
+    #atom_to_token = atom_to_token.repeat_interleave(multiplicity, 0)
+    #print(f"{atom_to_token.shape=}")
+
     # Retrieve frames and resolved masks
+    # frames_idx calculated during feature calc: a/b/c atoms for each token
     frames_idx_original = feats["frames_idx"]
     mask_frame_true = feats["frame_resolved_mask"]
 
@@ -372,6 +385,7 @@ def pae_loss(
         resolved_mask=true_coords_resolved_mask,
     )
 
+    # extract frame atoms
     frame_true_atom_a, frame_true_atom_b, frame_true_atom_c = (
         frames_idx_true[:, :, :, 0],
         frames_idx_true[:, :, :, 1],
@@ -380,9 +394,24 @@ def pae_loss(
     # Compute token coords in true frames
     B, N, _ = true_atom_coords.shape
     true_atom_coords = true_atom_coords.reshape(B // multiplicity, multiplicity, -1, 3)
-    true_coords_transformed = express_coordinate_in_frame(
-        true_atom_coords, frame_true_atom_a, frame_true_atom_b, frame_true_atom_c
-    )
+    if token_level_pae:
+        true_coords_transformed = express_coordinate_in_frame(
+            true_atom_coords, frame_true_atom_a, frame_true_atom_b, frame_true_atom_c
+        )
+    else:
+        # find parent token from one-hot atom_to_token
+        token_idx_per_atom = torch.argmax(atom_to_token, dim=-1)
+        # add multiplicity dimension and expand
+        token_idx_per_atom = token_idx_per_atom[:, None, :].expand(-1, multiplicity, -1)
+        # remaps token-indexed frame to atom-indexed frame
+        frame_true_atom_a = torch.gather(frame_true_atom_a, dim=2, index=token_idx_per_atom)
+        frame_true_atom_b = torch.gather(frame_true_atom_b, dim=2, index=token_idx_per_atom)
+        frame_true_atom_c = torch.gather(frame_true_atom_c, dim=2, index=token_idx_per_atom)
+        # compute atom coords in true frames
+        true_coords_transformed = express_coordinate_in_frame(
+            true_atom_coords, frame_true_atom_a, frame_true_atom_b, frame_true_atom_c,
+            return_all_atoms=True,
+        )
 
     # Compute pred frames and mask
     frames_idx_pred, mask_collinear_pred = compute_frame_pred(
@@ -396,39 +425,89 @@ def pae_loss(
     # Compute token coords in pred frames
     B, N, _ = pred_atom_coords.shape
     pred_atom_coords = pred_atom_coords.reshape(B // multiplicity, multiplicity, -1, 3)
-    pred_coords_transformed = express_coordinate_in_frame(
-        pred_atom_coords, frame_pred_atom_a, frame_pred_atom_b, frame_pred_atom_c
-    )
+    if token_level_pae:
+        pred_coords_transformed = express_coordinate_in_frame(
+            pred_atom_coords, frame_pred_atom_a, frame_pred_atom_b, frame_pred_atom_c
+        )
+    else:
+        token_idx_per_atom = torch.argmax(atom_to_token, dim=-1)
+        token_idx_per_atom = token_idx_per_atom[:, None, :].expand(-1, multiplicity, -1)
+        frame_pred_atom_a = torch.gather(frame_pred_atom_a, dim=2, index=token_idx_per_atom)
+        frame_pred_atom_b = torch.gather(frame_pred_atom_b, dim=2, index=token_idx_per_atom)
+        frame_pred_atom_c = torch.gather(frame_pred_atom_c, dim=2, index=token_idx_per_atom)
+        pred_coords_transformed = express_coordinate_in_frame(
+            pred_atom_coords, frame_pred_atom_a, frame_pred_atom_b, frame_pred_atom_c,
+            return_all_atoms=True,
+        )
 
+    # calc aligned error e_ij between frame i and token j
     target_pae = torch.sqrt(
         ((true_coords_transformed - pred_coords_transformed) ** 2).sum(-1) + 1e-8
     )
 
     # Compute mask for the pae loss
-    b_true_resolved_mask = true_coords_resolved_mask[
-        torch.arange(B // multiplicity)[:, None, None].to(
-            pred_coords_transformed.device
-        ),
-        frame_true_atom_b,
-    ]
+    if token_level_pae:
+        b_true_resolved_mask = true_coords_resolved_mask[
+            torch.arange(B // multiplicity)[:, None, None].to(
+                pred_coords_transformed.device
+            ),
+            frame_true_atom_b,
+        ]
 
-    pair_mask = (
-        mask_frame_true[:, None, :, None]  # if true frame is invalid
-        * mask_collinear_true[:, :, :, None]  # if true frame is invalid
-        * mask_collinear_pred[:, :, :, None]  # if pred frame is invalid
-        * b_true_resolved_mask[:, :, None, :]  # If atom j is not resolved
-        * feats["token_pad_mask"][:, None, :, None]
-        * feats["token_pad_mask"][:, None, None, :]
-    )
+        pair_mask = (
+            mask_frame_true[:, None, :, None]       # if true frame is invalid
+            * mask_collinear_true[:, :, :, None]    # if true frame is invalid
+            * mask_collinear_pred[:, :, :, None]    # if pred frame is invalid
+            * b_true_resolved_mask[:, :, None, :]   # if atom j is not resolved
+            * feats["token_pad_mask"][:, None, :, None]
+            * feats["token_pad_mask"][:, None, None, :]
+        )
+    else:
+        token_idx_per_atom = torch.argmax(atom_to_token, dim=-1)
+        token_idx_per_atom = token_idx_per_atom[:, None, :].expand(-1, multiplicity, -1)
+        mask_frame_atom = torch.gather(
+            mask_frame_true[:, None, :].expand(-1, multiplicity, -1),
+            dim=2,
+            index=token_idx_per_atom,
+        )
+        mask_collinear_true_atom = torch.gather(
+            mask_collinear_true,
+            dim=2,
+            index=token_idx_per_atom,
+        )
+        mask_collinear_pred_atom = torch.gather(
+            mask_collinear_pred,
+            dim=2,
+            index=token_idx_per_atom,
+        )
+        atom_pad_mask = feats["atom_pad_mask"]
+
+        pair_mask = (
+            mask_frame_atom[:, :, :, None]
+            * mask_collinear_true_atom[:, :, :, None]
+            * mask_collinear_pred_atom[:, :, :, None]
+            * true_coords_resolved_mask[:, None, None, :]
+            * atom_pad_mask[:, None, :, None]
+            * atom_pad_mask[:, None, None, :]
+        )
 
     # compute loss
+    # target_shape = (
+    #     target_pae.shape[0] * target_pae.shape[1],
+    #     target_pae.shape[2],
+    #     target_pae.shape[3],
+    # )
+
+    # target_pae = target_pae.reshape(target_shape)
+    # pair_mask = pair_mask.reshape(target_shape)
+
     num_bins = pred_pae.shape[-1]
     bin_index = torch.floor(target_pae * num_bins / max_dist).long()
     bin_index = torch.clamp(bin_index, max=(num_bins - 1))
     pae_one_hot = nn.functional.one_hot(bin_index, num_classes=num_bins)
     errors = -1 * torch.sum(
         pae_one_hot
-        * torch.nn.functional.log_softmax(pred_pae.reshape(pae_one_hot.shape), dim=-1),
+        * torch.nn.functional.log_softmax(pred_pae, dim=-1),
         dim=-1,
     )
     loss = torch.sum(errors * pair_mask, dim=(-2, -1)) / (
@@ -466,12 +545,16 @@ def lddt_dist(dmat_predicted, dmat_true, mask, cutoff=15.0, per_atom=False):
         return score, total
 
 
-def express_coordinate_in_frame(atom_coords, frame_atom_a, frame_atom_b, frame_atom_c):
+def express_coordinate_in_frame(
+    atom_coords, frame_atom_a, frame_atom_b, frame_atom_c, 
+    return_all_atoms=False,
+):
+    #print(f"{atom_coords.shape=}, {frame_atom_a.shape=}, {frame_atom_b.shape=}, {frame_atom_c.shape=}")
     batch, multiplicity = atom_coords.shape[0], atom_coords.shape[1]
     batch_indices0 = torch.arange(batch)[:, None, None].to(atom_coords.device)
     batch_indices1 = torch.arange(multiplicity)[None, :, None].to(atom_coords.device)
 
-    # extract frame atoms
+    # extract frame atom arrays
     a, b, c = (
         atom_coords[batch_indices0, batch_indices1, frame_atom_a],
         atom_coords[batch_indices0, batch_indices1, frame_atom_b],
@@ -495,6 +578,22 @@ def express_coordinate_in_frame(atom_coords, frame_atom_a, frame_atom_b, frame_a
         ],
         dim=-1,
     )
+
+    if return_all_atoms:
+        # Align all atoms to each computed frame
+        # shape: (B, multiplicity, N_frame, N_atom, 3)
+        all_d = atom_coords[:, :, None, :, :] - b[:, :, :, None, :]
+        all_transformed = torch.cat(
+            [
+                torch.sum(all_d * e1[:, :, :, None, :], dim=-1, keepdim=True),
+                torch.sum(all_d * e2[:, :, :, None, :], dim=-1, keepdim=True),
+                torch.sum(all_d * e3[:, :, :, None, :], dim=-1, keepdim=True),
+            ],
+            dim=-1,
+        )
+        #print(f"{all_transformed.shape=}")
+        return all_transformed
+
     return x_transformed
 
 

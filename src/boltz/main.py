@@ -1045,6 +1045,12 @@ def cli() -> None:
     default=True,
     help="Whether to write token-level pLDDT resolved values to structure. Default is True.",
 )
+@click.option(
+    "--token_level_pae",
+    type=bool,
+    default=True,
+    help="Whether to calc/write token-level PAE values. Default is True.",
+)
 def predict(  # noqa: C901, PLR0915, PLR0912
     data: str,
     out_dir: str,
@@ -1084,6 +1090,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     no_kernels: bool = False,
     write_embeddings: bool = False,
     token_level_confidence: bool = True,
+    token_level_pae: bool = True,
 ) -> None:
     """Run predictions with Boltz."""
     # If cpu, write a friendly warning
@@ -1258,6 +1265,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
         boltz2=model == "boltz2",
         write_embeddings=write_embeddings,
         token_level_confidence=token_level_confidence,
+        token_level_pae=token_level_pae,
     )
 
     # Set up trainer
@@ -1331,6 +1339,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
             msa_args=asdict(msa_args),
             steering_args=asdict(steering_args),
             token_level_confidence=token_level_confidence,
+            token_level_pae=token_level_pae,
         )
         model_module.eval()
 
