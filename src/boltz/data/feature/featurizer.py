@@ -902,6 +902,7 @@ def process_msa_features(
     max_seqs: int,
     max_tokens: Optional[int] = None,
     pad_to_max_seqs: bool = False,
+    msa_col_mask_fraction: Optional[float] = 0.0,
 ) -> dict[str, Tensor]:
     """Get the MSA features.
 
@@ -915,6 +916,8 @@ def process_msa_features(
         The maximum number of tokens.
     pad_to_max_seqs : bool
         Whether to pad to the maximum number of sequences.
+    msa_col_mask_fraction : float, optional
+        The fraction of MSA columns to mask.
 
     Returns
     -------
@@ -925,10 +928,27 @@ def process_msa_features(
     # Created paired MSA
     msa, deletion, paired = construct_paired_msa(data, max_seqs_batch)
     msa, deletion, paired = (
-        msa.transpose(1, 0),
+        msa.transpose(1, 0),        # TODO: check if msa token ids: (N_MSA, N_RES)
         deletion.transpose(1, 0),
         paired.transpose(1, 0),
     )  # (N_MSA, N_RES, N_AA)
+
+    # Optional MSA column masking (on token ids, before one-hot), only if more than 1 sequence in MSA
+    if msa_col_mask_fraction > 0.0 and msa.shape[0] > 1:
+        # sample residue columns to mask across all MSA rows
+        col_mask = torch.rand(msa.shape[1], device=msa.device) < msa_col_mask_fraction
+        mask = torch.zeros_like(msa, dtype=torch.bool)
+        
+        # skip masking for first MSA sequence (target sequence)
+        mask[1:, :] = col_mask.unsqueeze(0)
+
+        # avoid re-masking UNK
+        mask = mask & (msa != const.token_ids["UNK"])
+
+        # apply mask to MSA tensor: replace values in msa with UNK where mask is True
+        msa = torch.where(mask, torch.full_like(msa, const.token_ids["UNK"]), msa)
+
+        print(f"MSA after {msa_col_mask_fraction} masking: {msa} \n {msa.shape}")
 
     # Prepare features
     msa = torch.nn.functional.one_hot(msa, num_classes=const.num_tokens)
@@ -1148,6 +1168,7 @@ class BoltzFeaturizer:
         inference_binder: Optional[int] = None,
         inference_pocket: Optional[list[tuple[int, int]]] = None,
         compute_constraint_features: bool = False,
+        msa_col_mask_fraction: Optional[float] = 0.0,
     ) -> dict[str, Tensor]:
         """Compute features.
 
@@ -1206,6 +1227,7 @@ class BoltzFeaturizer:
             max_seqs,
             max_tokens,
             pad_to_max_seqs,
+            msa_col_mask_fraction,
         )
 
         # Compute symmetry features
