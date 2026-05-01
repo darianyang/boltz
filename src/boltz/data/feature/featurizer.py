@@ -935,6 +935,7 @@ def process_msa_features(
 
     # Optional MSA column masking (on token ids, before one-hot), only if more than 1 sequence in MSA
     if msa_col_mask_fraction > 0.0 and msa.shape[0] > 1:
+        print(f"MSA with {msa_col_mask_fraction} column masking applied.")
         # sample residue columns to mask across all MSA rows
         col_mask = torch.rand(msa.shape[1], device=msa.device) < msa_col_mask_fraction
         mask = torch.zeros_like(msa, dtype=torch.bool)
@@ -947,8 +948,6 @@ def process_msa_features(
 
         # apply mask to MSA tensor: replace values in msa with UNK where mask is True
         msa = torch.where(mask, torch.full_like(msa, const.token_ids["UNK"]), msa)
-
-        print(f"MSA after {msa_col_mask_fraction} masking: {msa} \n {msa.shape}")
 
     # Prepare features
     msa = torch.nn.functional.one_hot(msa, num_classes=const.num_tokens)

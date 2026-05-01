@@ -130,6 +130,8 @@ class MSAModule(nn.Module):
         use_paired_feature: bool = False,
         offload_to_cpu: bool = False,
         use_trifast: bool = False,
+        subsample_msa: bool = True,
+        num_subsampled_msa: int = 1024,
         **kwargs,
     ) -> None:
         """Initialize the MSA module.
@@ -165,6 +167,9 @@ class MSAModule(nn.Module):
         self.msa_dropout = msa_dropout
         self.z_dropout = z_dropout
         self.use_paired_feature = use_paired_feature
+
+        self.subsample_msa = subsample_msa
+        self.num_subsampled_msa = num_subsampled_msa
 
         self.s_proj = nn.Linear(s_input_dim, msa_s, bias=False)
         self.msa_proj = nn.Linear(
@@ -260,6 +265,12 @@ class MSAModule(nn.Module):
             m = torch.cat([msa, has_deletion, deletion_value, is_paired], dim=-1)
         else:
             m = torch.cat([msa, has_deletion, deletion_value], dim=-1)
+
+        if self.subsample_msa:
+            print(f"Subsampling MSA from {m.shape[1]} to {self.num_subsampled_msa} sequences.")
+            msa_indices = torch.randperm(m.shape[1])[: self.num_subsampled_msa]
+            m = m[:, msa_indices]
+            msa_mask = msa_mask[:, msa_indices]
 
         # Compute input projections
         m = self.msa_proj(m)

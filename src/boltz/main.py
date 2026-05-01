@@ -64,7 +64,8 @@ class MSAModuleArgs:
     activation_checkpointing: bool = False
     offload_to_cpu: bool = False
     use_trifast: bool = True
-    mask_rate_msa: float = 0.0
+    subsample_msa: bool = False
+    num_subsampled_msa: int = 1024
 
 
 @dataclass
@@ -387,7 +388,8 @@ def process_inputs(  # noqa: C901, PLR0912, PLR0915
                 target = parse_yaml(path, ccd)
             elif path.is_dir():
                 msg = f"Found directory {path} instead of .fasta or .yaml, skipping."
-                raise RuntimeError(msg)
+                click.echo(msg) # skip instead of previous raise
+                continue
             else:
                 msg = (
                     f"Unable to parse filetype {path.suffix}, "
@@ -606,10 +608,21 @@ def cli() -> None:
     help="Whether to not use potentials for steering. Default is False.",
 )
 @click.option(
-    "--mask_rate_msa",
+    "--subsample_msa",
+    is_flag=True,
+    help="Whether to subsample the MSA. Default is False.",
+)
+@click.option(
+    "--num_subsampled_msa",
+    type=int,
+    help="The number of MSA sequences to subsample. Default is 1024.",
+    default=1024,
+)
+@click.option(
+    "--msa_col_mask_fraction",
     type=click.FloatRange(0.0, 1.0),
     default=0.0,
-    help="The masking rate for MSA sequences (replace with X). Default is 0.1.",
+    help="The masking rate for MSA columns (replace with X). Default is 0.0 (no masking).",
 )
 def predict(
     data: str,
@@ -632,7 +645,9 @@ def predict(
     msa_server_url: str = "https://api.colabfold.com",
     msa_pairing_strategy: str = "greedy",
     no_potentials: bool = False,
-    mask_rate_msa: float = 0.0,
+    subsample_msa: bool = True,
+    num_subsampled_msa: int = 1024,
+    msa_col_mask_fraction: float = 0.0,
 ) -> None:
     """Run predictions with Boltz-1."""
     # If cpu, write a friendly warning
@@ -715,6 +730,7 @@ def predict(
         msa_dir=processed.msa_dir,
         num_workers=num_workers,
         constraints_dir=processed.constraints_dir,
+        msa_col_mask_fraction=msa_col_mask_fraction,
     )
 
     # Load model
@@ -734,10 +750,10 @@ def predict(
     diffusion_params.step_scale = step_scale
 
     pairformer_args = PairformerArgs(use_trifast=(accelerator != "cpu"))
-    msa_module_args = MSAModuleArgs(use_trifast=(accelerator != "cpu"))
-
-    # set MSA masking rate
-    msa_module_args.mask_rate_msa = mask_rate_msa
+    msa_module_args = MSAModuleArgs(use_trifast=(accelerator != "cpu"),
+                                    subsample_msa=subsample_msa,
+                                    num_subsampled_msa=num_subsampled_msa,
+                                    )
 
     steering_args = BoltzSteeringParams()
     if no_potentials:
@@ -752,7 +768,7 @@ def predict(
         diffusion_process_args=asdict(diffusion_params),
         ema=False,
         pairformer_args=asdict(pairformer_args),
-        msa_module_args=asdict(msa_module_args),
+        msa_args=asdict(msa_module_args),
         steering_args=asdict(steering_args),
     )
     model_module.eval()
