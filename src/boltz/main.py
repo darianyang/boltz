@@ -1030,6 +1030,12 @@ def cli() -> None:
     default=1024,
 )
 @click.option(
+    "--msa_col_mask_fraction",
+    type=click.FloatRange(0.0, 1.0),
+    default=0.0,
+    help="The masking rate for MSA columns (replace with X). Default is 0.0 (no masking).",
+)
+@click.option(
     "--no_kernels",
     is_flag=True,
     help="Whether to disable the kernels. Default False",
@@ -1075,6 +1081,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
     max_msa_seqs: int = 8192,
     subsample_msa: bool = True,
     num_subsampled_msa: int = 1024,
+    msa_col_mask_fraction: float = 0.0,
     no_kernels: bool = False,
     write_embeddings: bool = False,
 ) -> None:
@@ -1279,6 +1286,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
                 template_dir=processed.template_dir,
                 extra_mols_dir=processed.extra_mols_dir,
                 override_method=method,
+                msa_col_mask_fraction=msa_col_mask_fraction,
             )
         else:
             data_module = BoltzInferenceDataModule(
@@ -1287,6 +1295,7 @@ def predict(  # noqa: C901, PLR0915, PLR0912
                 msa_dir=processed.msa_dir,
                 num_workers=num_workers,
                 constraints_dir=processed.constraints_dir,
+                msa_col_mask_fraction=msa_col_mask_fraction,
             )
 
         # Load model

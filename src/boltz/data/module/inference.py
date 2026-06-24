@@ -127,6 +127,7 @@ class PredictionDataset(torch.utils.data.Dataset):
         target_dir: Path,
         msa_dir: Path,
         constraints_dir: Optional[Path] = None,
+        msa_col_mask_fraction: float = 0.0,
     ) -> None:
         """Initialize the training dataset.
 
@@ -138,6 +139,8 @@ class PredictionDataset(torch.utils.data.Dataset):
             The path to the target directory.
         msa_dir : Path
             The path to the msa directory.
+        msa_col_mask_fraction : float
+            The fraction of MSA columns to mask.
 
         """
         super().__init__()
@@ -145,6 +148,7 @@ class PredictionDataset(torch.utils.data.Dataset):
         self.target_dir = target_dir
         self.msa_dir = msa_dir
         self.constraints_dir = constraints_dir
+        self.msa_col_mask_fraction = msa_col_mask_fraction
         self.tokenizer = BoltzTokenizer()
         self.featurizer = BoltzFeaturizer()
 
@@ -203,6 +207,7 @@ class PredictionDataset(torch.utils.data.Dataset):
                 inference_binder=binder,
                 inference_pocket=pocket,
                 compute_constraint_features=True,
+                msa_col_mask_fraction=self.msa_col_mask_fraction,
             )
         except Exception as e:  # noqa: BLE001
             print(f"Featurizer failed on {record.id} with error {e}. Skipping.")  # noqa: T201
@@ -233,6 +238,7 @@ class BoltzInferenceDataModule(pl.LightningDataModule):
         msa_dir: Path,
         num_workers: int,
         constraints_dir: Optional[Path] = None,
+        msa_col_mask_fraction: float = 0.0,
     ) -> None:
         """Initialize the DataModule.
 
@@ -248,6 +254,7 @@ class BoltzInferenceDataModule(pl.LightningDataModule):
         self.target_dir = target_dir
         self.msa_dir = msa_dir
         self.constraints_dir = constraints_dir
+        self.msa_col_mask_fraction = msa_col_mask_fraction
 
     def predict_dataloader(self) -> DataLoader:
         """Get the training dataloader.
@@ -263,6 +270,7 @@ class BoltzInferenceDataModule(pl.LightningDataModule):
             target_dir=self.target_dir,
             msa_dir=self.msa_dir,
             constraints_dir=self.constraints_dir,
+            msa_col_mask_fraction=self.msa_col_mask_fraction,
         )
         return DataLoader(
             dataset,

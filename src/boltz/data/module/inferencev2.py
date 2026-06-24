@@ -165,6 +165,7 @@ class PredictionDataset(torch.utils.data.Dataset):
         mol_dir: Path,
         constraints_dir: Optional[Path] = None,
         template_dir: Optional[Path] = None,
+        msa_col_mask_fraction: float = 0.0,
         extra_mols_dir: Optional[Path] = None,
         override_method: Optional[str] = None,
         affinity: bool = False,
@@ -184,7 +185,9 @@ class PredictionDataset(torch.utils.data.Dataset):
         constraints_dir : Optional[Path]
             The path to the constraints directory.
         template_dir : Optional[Path]
-            The path to the template directory.
+            The path to the template directory.   
+        msa_col_mask_fraction : float
+            The fraction of MSA columns to mask.
 
         """
         super().__init__()
@@ -194,6 +197,7 @@ class PredictionDataset(torch.utils.data.Dataset):
         self.mol_dir = mol_dir
         self.constraints_dir = constraints_dir
         self.template_dir = template_dir
+        self.msa_col_mask_fraction = msa_col_mask_fraction
         self.tokenizer = Boltz2Tokenizer()
         self.featurizer = Boltz2Featurizer()
         self.canonicals = load_canonicals(self.mol_dir)
@@ -288,6 +292,7 @@ class PredictionDataset(torch.utils.data.Dataset):
                 inference_pocket_constraints=pocket_constraints,
                 inference_contact_constraints=contact_constraints,
                 compute_constraint_features=True,
+                msa_col_mask_fraction=self.msa_col_mask_fraction,
                 override_method=self.override_method,
                 compute_affinity=self.affinity,
             )
@@ -324,6 +329,7 @@ class Boltz2InferenceDataModule(pl.LightningDataModule):
         msa_dir: Path,
         mol_dir: Path,
         num_workers: int,
+        msa_col_mask_fraction: float = 0.0,
         constraints_dir: Optional[Path] = None,
         template_dir: Optional[Path] = None,
         extra_mols_dir: Optional[Path] = None,
@@ -344,6 +350,8 @@ class Boltz2InferenceDataModule(pl.LightningDataModule):
             The path to the moldir.
         num_workers : int
             The number of workers to use.
+        msa_col_mask_fraction : float
+            The fraction of MSA columns to mask.
         constraints_dir : Optional[Path]
             The path to the constraints directory.
         template_dir : Optional[Path]
@@ -360,6 +368,7 @@ class Boltz2InferenceDataModule(pl.LightningDataModule):
         self.target_dir = target_dir
         self.msa_dir = msa_dir
         self.mol_dir = mol_dir
+        self.msa_col_mask_fraction = msa_col_mask_fraction
         self.constraints_dir = constraints_dir
         self.template_dir = template_dir
         self.extra_mols_dir = extra_mols_dir
@@ -382,6 +391,7 @@ class Boltz2InferenceDataModule(pl.LightningDataModule):
             mol_dir=self.mol_dir,
             constraints_dir=self.constraints_dir,
             template_dir=self.template_dir,
+            msa_col_mask_fraction=self.msa_col_mask_fraction,
             extra_mols_dir=self.extra_mols_dir,
             override_method=self.override_method,
             affinity=self.affinity,

@@ -1577,6 +1577,7 @@ def process_msa_features(
     pad_to_max_seqs: bool = False,
     msa_sampling: bool = False,
     affinity: bool = False,
+    msa_col_mask_fraction: Optional[float] = 0.0,
 ) -> dict[str, Tensor]:
     """Get the MSA features.
 
@@ -1594,6 +1595,8 @@ def process_msa_features(
         Whether to pad to the maximum number of sequences.
     msa_sampling : bool
         Whether to sample the MSA.
+    msa_col_mask_fraction : float
+        The fraction of MSA columns to mask.
 
     Returns
     -------
@@ -1613,6 +1616,22 @@ def process_msa_features(
         deletion.transpose(1, 0),
         paired.transpose(1, 0),
     )  # (N_MSA, N_RES, N_AA)
+
+    # Optional MSA column masking (on token ids, before one-hot), only if more than 1 sequence in MSA
+    if msa_col_mask_fraction > 0.0 and msa.shape[0] > 1:
+        print(f"MSA with {msa_col_mask_fraction} column masking applied.")
+        # sample residue columns to mask across all MSA rows
+        col_mask = torch.rand(msa.shape[1], device=msa.device) < msa_col_mask_fraction
+        mask = torch.zeros_like(msa, dtype=torch.bool)
+
+        # skip masking for first MSA sequence (target sequence)
+        mask[1:, :] = col_mask.unsqueeze(0)
+
+        # avoid re-masking UNK
+        mask = mask & (msa != const.token_ids["UNK"])
+
+        # apply mask to MSA tensor: replace values in msa with UNK where mask is True
+        msa = torch.where(mask, torch.full_like(msa, const.token_ids["UNK"]), msa)
 
     # Prepare features
     assert torch.all(msa >= 0) and torch.all(msa < const.num_tokens)
@@ -2194,6 +2213,7 @@ class Boltz2Featurizer:
         override_coords: Optional[Tensor] = None,
         bfactor_md_correction: bool = False,
         compute_constraint_features: bool = False,
+        msa_col_mask_fraction: Optional[float] = 0.0,
         inference_pocket_constraints: Optional[
             list[tuple[int, list[tuple[int, int]], float]]
         ] = None,
@@ -2286,6 +2306,7 @@ class Boltz2Featurizer:
             max_tokens=max_tokens,
             pad_to_max_seqs=pad_to_max_seqs,
             msa_sampling=training and msa_sampling,
+            msa_col_mask_fraction=msa_col_mask_fraction,
         )
 
         # Compute MSA features
