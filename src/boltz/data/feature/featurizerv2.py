@@ -1619,7 +1619,6 @@ def process_msa_features(
 
     # Optional MSA column masking (on token ids, before one-hot), only if more than 1 sequence in MSA
     if msa_col_mask_fraction > 0.0 and msa.shape[0] > 1:
-        print(f"MSA with {msa_col_mask_fraction} column masking applied.")
         # sample residue columns to mask across all MSA rows
         col_mask = torch.rand(msa.shape[1], device=msa.device) < msa_col_mask_fraction
         mask = torch.zeros_like(msa, dtype=torch.bool)
