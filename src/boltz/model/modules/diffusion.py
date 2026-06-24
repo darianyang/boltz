@@ -484,22 +484,29 @@ class AtomDiffusion(Module):
         steering_args=None,
         diffusion_coords_out=None, # for saving intermediate coords
         chunks=1, # for mod noise schedule, noting that 1 chunk is canonical noise schedule
+        initial_atom_coords=None, # e.g. from initial receptor-ligand definition diffusion
         **network_condition_kwargs,
     ):
         # if intermediate coords are to be saved
         if diffusion_coords_out is not None:
-            # # prepare structure object to store
-            # structure = self.structure
-            # and a list to hold the pdb strings of each step
-            #pdb_str = []
-            # instead, just save the coords in a list
+            # save the coords in a list
             traj_coords = []
 
         # TODO: testing option for distance potential only steering, update later
-        if steering_args["distance_potential_only"]:
-            potentials = get_potentials(distance_potential_only=True)
+        # sometimes this arg is not passed in, so need to check before trying to access
+        if "distance_potential_only" not in steering_args:
+            steering_args["distance_potential_only"] = False
+        if steering_args["distance_potential_only"] is True:
+            # testing harmonic option here, later make it more robust (TODO)
+            potentials = get_potentials(distance_potential_only=True, 
+                                        harmonic_potentials=steering_args["harmonic_potentials"],
+                                        lig_indices=steering_args.get("lig_indices"),
+                                        rec_indices=steering_args.get("rec_indices"),
+                                        )
         else:
-            potentials = get_potentials()
+            potentials = get_potentials(lig_indices=steering_args.get("lig_indices"),
+                                       rec_indices=steering_args.get("rec_indices"),
+                                       )
 
         if steering_args["fk_steering"]:
             multiplicity = multiplicity * steering_args["num_particles"]
@@ -520,15 +527,30 @@ class AtomDiffusion(Module):
         shape = (*atom_mask.shape, 3)
 
         # get the schedule, which is returned as (sigma, gamma) tuple, and pair up with the next sigma and gamma
-        #sigmas = self.sample_schedule(num_sampling_steps)
-        # TODO: testing mod noise schedule, note that 1 chunk is canonical noise schedule
         sigmas = self.sample_schedule(num_sampling_steps, chunks=chunks)
-        gammas = torch.where(sigmas > self.gamma_min, self.gamma_0, 0.0)
+        # adaptive gamma_min
+        if chunks == 1:
+            # standard single gamma cutoff (constant gamma_min)
+            gammas = torch.where(sigmas > self.gamma_min, self.gamma_0, 0.0)
+        elif chunks > 1:
+            # standard gamma for chunk 1 but then lower gamma for subsequent chunks
+            gammas = torch.zeros_like(sigmas)
+            gammas[sigmas > self.gamma_min] = self.gamma_0
+            # for subsequent chunks, set gamma to 1/10 if sigma > gamma_min, else 0.0
+            for chunk in range(1, chunks):
+                start_idx = chunk * (len(sigmas) // chunks)
+                end_idx = (chunk + 1) * (len(sigmas) // chunks)
+                gammas[start_idx:end_idx] = torch.where(sigmas[start_idx:end_idx] > self.gamma_min/10, self.gamma_0, 0.0)
+
         sigmas_and_gammas = list(zip(sigmas[:-1], sigmas[1:], gammas[1:]))
 
         # atom position is noise at the beginning
+        # unless initial_atom_coords is provided, in which case we start from that
         init_sigma = sigmas[0]
-        atom_coords = init_sigma * torch.randn(shape, device=self.device)
+        if initial_atom_coords is None:
+            atom_coords = init_sigma * torch.randn(shape, device=self.device)
+        else:
+            atom_coords = initial_atom_coords.repeat_interleave(multiplicity, 0)
         atom_coords_denoised = None
         model_cache = {} if self.use_inference_model_cache else None
 
@@ -536,9 +558,9 @@ class AtomDiffusion(Module):
         token_a = None
 
         # gradually denoise
-        for step_idx, (sigma_tm, sigma_t, gamma) in tqdm(enumerate(sigmas_and_gammas), 
-                                                         total=num_sampling_steps, desc="Diffusion Sampling: "):
-        #for step_idx, (sigma_tm, sigma_t, gamma) in enumerate(sigmas_and_gammas):
+        # for step_idx, (sigma_tm, sigma_t, gamma) in tqdm(enumerate(sigmas_and_gammas), 
+        #                                                  total=num_sampling_steps, desc="Diffusion Sampling: "):
+        for step_idx, (sigma_tm, sigma_t, gamma) in enumerate(sigmas_and_gammas):
             # with no diff coord out, use standard random augmentation workflow
             if diffusion_coords_out is None:
                 # compute random augmentation
@@ -749,6 +771,10 @@ class AtomDiffusion(Module):
                     # first split up the atom_coords by n_samples and n_particles
                     # getting shape (n_samples, n_particles, n_atoms, 3-xyz)
                     atom_coords_per_sample = atom_coords.view(n_samples, n_particles, -1, 3)
+                    # option here for returning the denoised coords
+                    # note that these are what e.g. guidance grad operates on
+                    #atom_coords_per_sample = atom_coords_denoised.view(n_samples, n_particles, -1, 3)
+
                     # save the first particle of each sample
                     # TODO: later can save all particles if needed or the best ranking particle
                     traj_coords.append(atom_coords_per_sample[:, 0, :, :]) # shape (n_samples, n_atoms, 3)

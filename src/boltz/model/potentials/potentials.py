@@ -20,9 +20,7 @@ class Potential(ABC):
         if index.shape[1] == 0:
             return torch.zeros(coords.shape[:-2], device=coords.device)
 
-        #print("COMPUTING POTENTIAL")
         if com_args is not None:
-            #print("WITH COM")
             # If using COM, define COM groups, along with atom padding mask for valid atoms
             # then compute COM of each unpadded group of atom coords
             # each group then has an index, this index is used to compute variable
@@ -45,7 +43,6 @@ class Potential(ABC):
 
     def compute_gradient(self, coords, feats, parameters):
         index, args, com_args = self.compute_args(feats, parameters)
-        #print("COMPUTING GRADIENT")
         if com_args is not None:
             com_index, atom_pad_mask = com_args
         else:
@@ -56,7 +53,6 @@ class Potential(ABC):
             return torch.zeros_like(coords)
 
         if com_index is not None:
-            #print("WITH COM")
             unpad_coords = coords[...,atom_pad_mask,:]
             unpad_com_index = com_index[atom_pad_mask]
             coords = torch.zeros(
@@ -348,46 +344,26 @@ class PlanarBondPotential(FlatBottomPotential, AbsDihedralPotential):
 
         return improper_index, (k, lower_bounds, upper_bounds), None
 
-# test contact distance potential
+# contact distance potential
 class ContactPotential(FlatBottomPotential, DistancePotential):
-#class ContactPotential(HarmonicFlatBottomPotential, DistancePotential):
     def compute_args(self, feats, parameters):
-        # TODO: for com_args: return com_group_ids and atom_pad_mask
-        #       then return the index for the com_groups that are being calculated
-        #index = feats["contact_pair_index"][0]
-
-        # assign two groups: ligand and receptor
-        # TODO: eventually include these in feats for generality
-        #       and later on, select from initial prediction or known structure
-        #       then refine from there / increase potential strength over time
-        # these are for 4w52-bnz
-        lig_indices = [1382, 1383, 1384, 1385, 1386, 1387]
-        rec_indices = [650, 768, 773, 789, 797, 856, 904] # these were bad, used r0 pred structure
-        #rec_indices = [601, 650, 658, 674, 681, 768, 797] # updated using the full boltz pred
-        # for 1opj-sti
-        # lig_indices = [2367, 2368, 2369, 2370, 2371, 2372, 2373, 2374, 2375, 2376, 2377, 
-        #                2378, 2379, 2380, 2381, 2382, 2383, 2384, 2385, 2386, 2387, 2388, 
-        #                2389, 2390, 2391, 2392, 2393, 2394, 2395, 2396, 2397, 2398, 2399, 
-        #                2400, 2401, 2402, 2403]
-        # rec_indices = [206, 214, 260, 371, 536, 562, 604, 612, 619, 628, 757, 768, 776, 
-        #                783, 795, 799, 1057, 1100, 1119, 1268, 1273, 1281, 1296, 1304]
-
+        # use input indices
+        lig_indices = parameters['lig_indices']
+        rec_indices = parameters['rec_indices']
+        if lig_indices is None or rec_indices is None:
+            raise ValueError("Ligand and receptor indices must be provided in parameters for ContactPotential.")
 
         # assign com group id of 0 to other, 1 to receptor, 2 to ligand
         # start with zero tensor of shape (num_atoms,)
         atom_group_id = torch.zeros(feats["atom_pad_mask"].shape[1], dtype=torch.long, device=feats["atom_pad_mask"].device)
         atom_group_id[rec_indices] = 1
         atom_group_id[lig_indices] = 2
-        #print(f"{atom_group_id=}: {atom_group_id=}")
 
-        # TODO: prob need a mask here when selecting the contact pair
         # note that index is for coords, which is of shape (n_fk_particles, n_padded_atoms, 3)
         # so need to return indices that are valid for the padded atoms only
-        # but the padding is just for the last few atoms, that is it padds the ends of the tensor dim 
+        # but the padding is just for the last few atoms, that is, it padds the ends of the tensor dim 
         atom_pad_mask = feats['atom_pad_mask'][0].bool()
-        #print(f"{atom_pad_mask.shape=}")
-        # TODO: dummy test index, use same device as feats, e.g. GPU
-        #index = torch.tensor([[5],[20]], device=feats["atom_pad_mask"].device)
+        
         # 1 is receptor group and 2 is ligand group
         index = torch.tensor([[1],[2]], device=feats["atom_pad_mask"].device)
 
@@ -395,11 +371,15 @@ class ContactPotential(FlatBottomPotential, DistancePotential):
         distance = parameters['distance']
         lower_bounds = torch.full((index.shape[1],), distance - parameters['buffer'], device=index.device)
         upper_bounds = torch.full((index.shape[1],), distance + parameters['buffer'], device=index.device)
+        
         # force constant: 1.0 for each contact
         k = torch.ones_like(lower_bounds)
 
-        #return index, (k, lower_bounds, upper_bounds), None
         return index, (k, lower_bounds, upper_bounds), (atom_group_id, atom_pad_mask)
+
+class HarmonicContactPotential(HarmonicFlatBottomPotential, DistancePotential):
+    # Inherit everything from ContactPotential, but use HarmonicFlatBottomPotential
+    compute_args = ContactPotential.compute_args
 
 # # test with multiple contact pairs: g2703 example
 # class ContactPotential(FlatBottomPotential, DistancePotential):
@@ -459,11 +439,30 @@ class ContactPotential(FlatBottomPotential, DistancePotential):
 #         return index, (k, lower_bounds, upper_bounds), None
 #         #return index, (k, lower_bounds, upper_bounds), (atom_group_id, atom_pad_mask)
 
-def get_potentials(distance_potential_only=False):
+def get_potentials(distance_potential_only=False, harmonic_potentials=False,
+                   lig_indices=None, rec_indices=None,
+                   ):
     n_repeats = 6 # chunks
     distance_mod = 3 # angstroms
     distance_thresholds = [(i + 1) / n_repeats for i in range(n_repeats - 1)]
     distance_values = list(reversed([(i) * distance_mod for i in range(n_repeats)]))
+
+    distance_contact_parameters={
+        'guidance_interval': 5,
+        'guidance_weight': RepeatedExponentialInterpolation(
+            start=0.0, end=1.0, alpha=-2.0, n_repeats=n_repeats
+            ),
+        'resampling_weight': PiecewiseStepFunction(
+            thresholds=[1 - 1 / n_repeats], values=[1.0, 0.0]
+            ),
+        'distance' : PiecewiseStepFunction(
+            thresholds=distance_thresholds,
+            values=distance_values
+            ),
+        'buffer': 1.0, # distance +/- buffer (use same for harmonic and linear)
+        'lig_indices': lig_indices,
+        'rec_indices': rec_indices,
+        }
 
     potentials = [
         SymmetricChainCOMPotential(
@@ -534,63 +533,16 @@ def get_potentials(distance_potential_only=False):
                 'buffer': 0.26180
             }
         ),
-        ContactPotential(
-            parameters={
-                'guidance_interval': 5,
-                'guidance_weight': RepeatedExponentialInterpolation(
-                    start=0.0, end=1.0, alpha=-2.0, n_repeats=n_repeats
-                    ),
-                'resampling_weight': PiecewiseStepFunction(
-                    thresholds=[1 - 1 / n_repeats], values=[1.0, 0.0]
-                    ),
-                'distance' : PiecewiseStepFunction(
-                    thresholds=distance_thresholds,
-                    values=distance_values
-                    ),
-                'buffer': 1.0, # distance +/- buffer
-            }
-            # parameters={
-            #     'guidance_interval': 4,
-            #     'guidance_weight': 0.5,
-            #     'resampling_weight': 1.0,
-            #     'buffer': 2.0, # e.g. here a distance buffer, but normally the actual distance
-            # }
-            # # from Boltz2 contact potential
-            # parameters={
-            #     'guidance_interval': 4,
-            #     'guidance_weight': PiecewiseStepFunction(
-            #         thresholds=[0.25, 0.75], 
-            #         #values=[0.0, 0.5, 1.0],
-            #         values=[1.0, 0.5, 0.05],
-            #     ),
-            #     'resampling_weight': 1.0,
-            #     'buffer': 2.0,
-            # }
-        ),
+        ContactPotential(parameters=distance_contact_parameters) if not harmonic_potentials \
+            else HarmonicContactPotential(parameters=distance_contact_parameters),
     ]
 
-    # option to only use contact potential for testing
-    dpotential = [
-        ContactPotential(
-            parameters={
-                'guidance_interval': 5,
-                'guidance_weight': RepeatedExponentialInterpolation(
-                    start=0.0, end=1.0, alpha=-2.0, n_repeats=n_repeats
-                    ),
-                'resampling_weight': PiecewiseStepFunction(
-                    thresholds=[1 - 1 / n_repeats], values=[1.0, 0.0]
-                    ),
-                'distance' : PiecewiseStepFunction(
-                    thresholds=distance_thresholds,
-                    values=distance_values
-                    ),
-                'buffer': 1.0, # distance +/- buffer
-                #'buffer': 0.5, # distance +/- buffer, for harmonic use smaller buffer
-                }
-            )
-        ]
-    
+    # option to only use contact potential
     if distance_potential_only:
+        if harmonic_potentials:
+            dpotential = [HarmonicContactPotential(parameters=distance_contact_parameters)]    
+        else:
+            dpotential = [ContactPotential(parameters=distance_contact_parameters)]
         return dpotential
 
     return potentials
